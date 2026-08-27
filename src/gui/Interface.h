@@ -199,5 +199,5 @@ TextureStage::FilterMode getInterfaceTextureFilter();
 extern bool g_cursorOverBook;
 
 void updateCombineFlagForEntity(Entity * source, Entity * target);
-
+void ARX_INTERFACE_RenderInstantMagic();
 #endif // ARX_GUI_INTERFACE_H

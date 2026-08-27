@@ -1725,8 +1725,12 @@ public:
 		addControlRow(CONTROLS_CUST_TOGGLE_FULLSCREEN, "system_menus_options_input_customize_controls_toggle_fullscreen");
 		
 		addControlRow(CONTROLS_CUST_DEBUG,             "system_menus_options_input_customize_controls_debug");
-		
 		addBackButton(Page_OptionsInputCustomizeKeys1);
+{
+    auto cb = std::make_unique<ButtonWidget>(buttonSize(16, 16), "graph/interface/menus/next");
+    cb->setTargetPage(Page_OptionsInputCustomizeKeys3);
+    addCorner(std::move(cb), BottomRight);
+}
 		
 		{
 			std::string_view label = getLocalised("system_menus_options_input_customize_default");
@@ -1741,6 +1745,30 @@ public:
 		
 	}
 	
+};
+
+class ControlOptionsMenuPage3 final : public ControlOptionsPage {
+public:
+ControlOptionsMenuPage3()
+    : ControlOptionsPage(Page_OptionsInputCustomizeKeys3)
+{ }
+void init() override {
+    reserveBottom();
+    addControlRow(CONTROLS_CUST_INSTANT_MAGIC, "system_menus_options_input_customize_controls_instant_magic");
+    addControlRow(CONTROLS_CUST_SPELL_PREV,    "system_menus_options_input_customize_controls_spell_prev");
+    addControlRow(CONTROLS_CUST_SPELL_NEXT,    "system_menus_options_input_customize_controls_spell_next");
+	addControlRow(CONTROLS_CUST_SPELL_CAST,        "system_menus_options_input_customize_controls_spell_cast");
+    addBackButton(Page_OptionsInputCustomizeKeys2);
+    {
+        std::string_view label = getLocalised("system_menus_options_input_customize_default");
+        auto txt = std::make_unique<TextWidget>(hFontMenu, label);
+        txt->clicked = [this](Widget * /* widget */) {
+            resetActionKeys();
+        };
+        addCorner(std::move(txt), BottomCenter);
+    }
+    reinitActionKeys();
+}
 };
 
 class QuitConfirmMenuPage final : public MenuPage {
@@ -1807,6 +1835,7 @@ void MainMenu::initWindowPages() {
 	m_window->add(std::make_unique<InputOptionsMenuPage>());
 	m_window->add(std::make_unique<ControlOptionsMenuPage1>());
 	m_window->add(std::make_unique<ControlOptionsMenuPage2>());
+	m_window->add(std::make_unique<ControlOptionsMenuPage3>());
 	
 	m_window->add(std::make_unique<QuitConfirmMenuPage>());
 	m_window->add(std::make_unique<LocalizationMenuPage>());

@@ -179,6 +179,10 @@ constexpr const ActionKey actions[NUM_ACTION_KEY] = {
 	ActionKey((Keyboard::Key_LeftAlt << 16) | Keyboard::Key_Enter, (Keyboard::Key_RightAlt << 16) | Keyboard::Key_Enter), // TOGGLE_FULLSCREEN
 	ActionKey(Keyboard::Key_Grave), // CONSOLE
 	ActionKey(Keyboard::Key_ScrollLock, Keyboard::Key_Backslash), // DEBUG
+    ActionKey(Keyboard::Key_F7), // <-- INSTANT_MAGIC
+	ActionKey(Keyboard::Key_LeftBracket),  // SPELL_PREV (клавиша [)
+    ActionKey(Keyboard::Key_RightBracket), // SPELL_NEXT (клавиша ])
+	ActionKey(Keyboard::Key_V), // SPELL_CAST (каст заклинания)
 };
 
 } // namespace Default
@@ -320,6 +324,10 @@ constexpr const std::string_view actions[NUM_ACTION_KEY] = {
 	"toggle_fullscreen",
 	"console",
 	"debug",
+	"instant_magic",
+	"spell_prev ",
+    "spell_next ",
+	"spell_cast ",
 };
 
 // Misc options

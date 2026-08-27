@@ -134,7 +134,6 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "window/RenderWindow.h"
 
-
 extern AnimationDuration PLAYER_ROTATION;
 extern float SLID_VALUE;
 
@@ -163,14 +162,12 @@ bool TRUE_PLAYER_MOUSELOOK_ON = false;
 static bool MEMO_PLAYER_MOUSELOOK_ON = false;
 
 bool COMBINEGOLD = false;
-
 bool DRAGGING = false;
 bool MAGICMODE = false;
 
 static PlatformInstant COMBAT_MODE_ON_START_TIME = 0;
 static long SPECIAL_DRAW_WEAPON = 0;
 bool bGCroucheToggle = false;
-
 
 bool bInverseInventory = false;
 bool lOldTruePlayerMouseLook = TRUE_PLAYER_MOUSELOOK_ON;
@@ -1105,29 +1102,62 @@ void ArxGame::managePlayerControls() {
 		ARX_INTERFACE_setCombatMode(COMBAT_MODE_OFF);
 	}
 	
-	// Checks INVENTORY Key Status.
-	if(GInput->actionNowPressed(CONTROLS_CUST_INVENTORY)) {
-		
-		if(player.Interface & INTER_COMBATMODE) {
-			ARX_INTERFACE_setCombatMode(COMBAT_MODE_OFF);
-		}
-		
-		bInverseInventory = !bInverseInventory;
-		lOldTruePlayerMouseLook = TRUE_PLAYER_MOUSELOOK_ON;
-		
-		if(!config.input.mouseLookToggle) {
-			bForceEscapeFreeLook = true;
-		}
-		
-	}
-	
-	// Checks BOOK Key Status.
-	if(GInput->actionNowPressed(CONTROLS_CUST_BOOK))
-		g_playerBook.toggle();
+ // Checks INVENTORY Key Status (Игнорируем, если открыто меню магии)
+  // Checks INVENTORY Key Status.
+ if(GInput->actionNowPressed(CONTROLS_CUST_INVENTORY)) {
+     // Если активно меню магии, полностью игнорируем нажатие, чтобы не было конфликта и зависания звука
+     if (!(player.Interface & INTER_INSTANT_MAGIC)) {
+         if(player.Interface & INTER_COMBATMODE) {
+             ARX_INTERFACE_setCombatMode(COMBAT_MODE_OFF);
+         }
+         bInverseInventory = !bInverseInventory;
+         lOldTruePlayerMouseLook = TRUE_PLAYER_MOUSELOOK_ON;
+         if(!config.input.mouseLookToggle) {
+             bForceEscapeFreeLook = true;
+         }
+     }
+ }
+        // Checks BOOK Key Status.
+    if(GInput->actionNowPressed(CONTROLS_CUST_BOOK))
+        g_playerBook.toggle();
 
-	// Check For Combat Mode ON/OFF
-	if(   eeMousePressed1()
-	   && !(player.Interface & INTER_COMBATMODE)
+// --- НАЧАЛО: Логика мгновенной магии ---
+if (GInput->actionNowPressed(CONTROLS_CUST_INSTANT_MAGIC)) {
+    player.Interface ^= INTER_INSTANT_MAGIC;
+    if (player.Interface & INTER_INSTANT_MAGIC) {
+        MAGICMODE = true;
+        TRUE_PLAYER_MOUSELOOK_ON = false;
+        bInverseInventory = false;  // <-- ДОБАВЛЕНО: сбрасываем инверсию инвентаря
+        bForceEscapeFreeLook = false;  // <-- ДОБАВЛЕНО: сбрасываем принудительный выход из freelook
+    } else {
+        TRUE_PLAYER_MOUSELOOK_ON = true;
+    }
+}
+
+if (player.m_selectedInstantSpell != SPELL_NONE && GInput->actionNowPressed(CONTROLS_CUST_SPELL_CAST)) {
+    Entity * io = entities.player();
+    
+    // Запускаем анимацию каста на втором слое (руки)
+    if (io && io->anims[ANIM_CAST_CYCLE]) {
+        io->animlayer[1].cur_anim = io->anims[ANIM_CAST_CYCLE];
+        io->animlayer[1].ctime = AnimationDuration(0);
+        player.doingmagic = 2;
+    }
+    
+    ARX_SPELLS_Launch(player.m_selectedInstantSpell, *io, SpellcastFlags(), -1, nullptr, 0);
+    
+    if (player.Interface & INTER_INSTANT_MAGIC) {
+        player.Interface &= ~INTER_INSTANT_MAGIC;
+        TRUE_PLAYER_MOUSELOOK_ON = true;
+        MAGICMODE = false;
+    }
+}
+// --- КОНЕЦ: Логика мгновенной магии ---
+
+    // Check For Combat Mode ON/OFF
+    if(   eeMousePressed1()
+       && !(player.Interface & INTER_COMBATMODE)
+       // ... и так далее ...
 	   && !g_cursorOverBook
 	   && !cursorIsSpecial()
 	   && PLAYER_MOUSELOOK_ON
@@ -1162,84 +1192,65 @@ void ArxGame::managePlayerControls() {
 	
 	static PlayerInterfaceFlags lOldInterfaceTemp = 0;
 	
-	if(TRUE_PLAYER_MOUSELOOK_ON) {
-		if(bInverseInventory) {
-			
-			bRenderInCursorMode = true;
-			
-			if(!MAGICMODE) {
-				InventoryOpenClose(1);
-			}
-			
-		} else {
-			if(!g_playerInventoryHud.isClosing()) {
-				
-				g_hudRoot.mecanismIcon.reset();
-				
-				if(player.Interface & INTER_INVENTORYALL) {
-					ARX_SOUND_PlayInterface(g_snd.BACKPACK, Random::getf(0.9f, 1.1f));
-					g_playerInventoryHud.close();
-					lOldInterfaceTemp = INTER_INVENTORYALL;
-				}
-				
-				bRenderInCursorMode = false;
-				InventoryOpenClose(2);
-				
-				if(player.Interface & INTER_INVENTORY) {
-					g_secondaryInventoryHud.close();
-				}
-				
-				if(config.input.mouseLookToggle) {
-					TRUE_PLAYER_MOUSELOOK_ON = true;
-					SLID_START = g_platformTime.frameStart();
-				}
-				
-			}
-		}
-	} else {
-		if(bInverseInventory) {
-			if(!g_playerInventoryHud.isClosing()) {
-				
-				bRenderInCursorMode = false;
-				
-				InventoryOpenClose(2);
-				
-				if(player.Interface & INTER_INVENTORY) {
-					g_secondaryInventoryHud.close();
-				}
-				
-				if(config.input.mouseLookToggle) {
-					TRUE_PLAYER_MOUSELOOK_ON = true;
-					SLID_START = g_platformTime.frameStart();
-				}
-				
-			}
-		} else {
-			
-			bRenderInCursorMode = true;
-			
-			if(!MAGICMODE) {
-				if(lOldInterfaceTemp) {
-					lOldInterface = lOldInterfaceTemp;
-					lOldInterfaceTemp = 0;
-					ARX_SOUND_PlayInterface(g_snd.BACKPACK, Random::getf(0.9f, 1.1f));
-				}
-				if(lOldInterface) {
-					player.Interface |= lOldInterface;
-					player.Interface &= ~INTER_INVENTORY;
-				} else {
-					InventoryOpenClose(1);
-				}
-			}
-			
-		}
-		
-		if(bRenderInCursorMode) {
-			spells.endByCaster(EntityHandle_Player, SPELL_FLYING_EYE);
-		}
-	}
+if(TRUE_PLAYER_MOUSELOOK_ON) {
+    if(bInverseInventory) {
+        bRenderInCursorMode = true;
+        if(!MAGICMODE && !(player.Interface & INTER_INSTANT_MAGIC)) {  // <-- ДОБАВЛЕНО: проверка магии
+            InventoryOpenClose(1);
+        }
+    } else {
+        if(!g_playerInventoryHud.isClosing()) {
+            g_hudRoot.mecanismIcon.reset();
+            if(player.Interface & INTER_INVENTORYALL) {
+                ARX_SOUND_PlayInterface(g_snd.BACKPACK, Random::getf(0.9f, 1.1f));
+                g_playerInventoryHud.close();
+                lOldInterfaceTemp = INTER_INVENTORYALL;
+            }
+            bRenderInCursorMode = false;
+            InventoryOpenClose(2);
+            if(player.Interface & INTER_INVENTORY) {
+                g_secondaryInventoryHud.close();
+            }
+            if(config.input.mouseLookToggle && !(player.Interface & INTER_INSTANT_MAGIC)) {  // <-- ДОБАВЛЕНО: проверка магии
+                TRUE_PLAYER_MOUSELOOK_ON = true;
+                SLID_START = g_platformTime.frameStart();
+            }
+        }
+    }
+} else {
+    if(bInverseInventory) {
+        if(!g_playerInventoryHud.isClosing()) {
+            bRenderInCursorMode = false;
+            InventoryOpenClose(2);
+            if(player.Interface & INTER_INVENTORY) {
+                g_secondaryInventoryHud.close();
+            }
+            if(config.input.mouseLookToggle && !(player.Interface & INTER_INSTANT_MAGIC)) {  // <-- ДОБАВЛЕНО: проверка магии
+                TRUE_PLAYER_MOUSELOOK_ON = true;
+                SLID_START = g_platformTime.frameStart();
+            }
+        }
+    } else {
+        bRenderInCursorMode = true;
+        if(!MAGICMODE && !(player.Interface & INTER_INSTANT_MAGIC)) {  // <-- ДОБАВЛЕНО: проверка магии
+            if(lOldInterfaceTemp) {
+                lOldInterface = lOldInterfaceTemp;
+                lOldInterfaceTemp = 0;
+                ARX_SOUND_PlayInterface(g_snd.BACKPACK, Random::getf(0.9f, 1.1f));
+            }
+            if(lOldInterface) {
+                player.Interface |= lOldInterface;
+                player.Interface &= ~INTER_INVENTORY;
+            } else {
+                InventoryOpenClose(1);
+            }
+        }
+    }
+    if(bRenderInCursorMode) {
+        spells.endByCaster(EntityHandle_Player, SPELL_FLYING_EYE);
+    }
 }
-
+}
 void ARX_INTERFACE_Reset()
 {
 	g_hudRoot.playerInterfaceFader.reset();
@@ -1960,4 +1971,64 @@ TextureStage::FilterMode getInterfaceTextureFilter() {
 		case UIFilterBilinear: return TextureStage::FilterLinear;
 	}
 	arx_unreachable();
+}
+//-----------------------------------------------------------------------------
+// Мгновенная магия - ОДНА ИКОНКА ВНИЗУ ЭКРАНА
+//-----------------------------------------------------------------------------
+void ARX_INTERFACE_RenderInstantMagic() {
+    if (!(player.Interface & INTER_INSTANT_MAGIC)) {
+        return;
+    }
+
+    // Собираем список известных заклинаний
+    std::vector<SpellType> knownSpells;
+    for (int i = 0; i < SPELL_TYPES_COUNT; i++) {
+        if (!spellicons[i].bSecret && player.hasAllRunes(spellicons[i].symbols)) {
+            knownSpells.push_back(static_cast<SpellType>(i));
+        }
+    }
+    if (knownSpells.empty()) {
+        return;
+    }
+
+    // Статический индекс выбранного заклинания
+    static int selectedIndex = 0;
+    if (selectedIndex >= (int)knownSpells.size()) selectedIndex = 0;
+
+    // Прокрутка стрелками
+        if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_PREV)) {
+        selectedIndex--;
+        if (selectedIndex < 0) selectedIndex = (int)knownSpells.size() - 1;
+    }
+    if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_NEXT)) {
+        selectedIndex++;
+        if (selectedIndex >= (int)knownSpells.size()) selectedIndex = 0;
+    }
+
+    // Запоминаем выбранное заклинание
+    player.m_selectedInstantSpell = knownSpells[selectedIndex];
+
+    // Параметры отрисовки
+    float iconSize = 48.f * g_sizeRatio.x;
+float startX = (g_size.width() - iconSize) / 2.f;
+float startY = g_size.height() - iconSize - 60.f * g_sizeRatio.y;
+
+    // Полупрозрачный фон
+    static TextureContainer * bgTexture = nullptr;
+    if (!bgTexture) {
+        bgTexture = TextureContainer::LoadUI("graph/interface/book/spellbook");
+    }
+
+    // Золотая рамка
+    if (bgTexture) {
+        Rectf frameRect(startX - 5.f, startY - 5.f, startX + iconSize + 5.f, startY + iconSize + 5.f);
+        EERIEDrawBitmap(frameRect, 0.00005f, bgTexture, Color(255, 215, 0, 200));
+    }
+
+    // Иконка заклинания
+    SpellType currentSpell = knownSpells[selectedIndex];
+    if (spellicons[currentSpell].tc) {
+        Rectf iconRect(startX, startY, startX + iconSize, startY + iconSize);
+        EERIEDrawBitmap(iconRect, 0.0001f, spellicons[currentSpell].tc, Color::white);
+    }
 }

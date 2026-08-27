@@ -1857,7 +1857,7 @@ void ArxGame::renderLevel() {
 			ARX_MAGICAL_FLARES_Update();
 			g_renderBatcher.render();
 		}
-		
+		ARX_INTERFACE_RenderInstantMagic();
 	}
 
 	GRenderer->Clear(Renderer::DepthBuffer);

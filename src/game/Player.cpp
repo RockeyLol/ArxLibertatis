@@ -1583,6 +1583,7 @@ void ARX_PLAYER_Manage_Visual() {
  */
 void ARX_PLAYER_InitPlayer() {
 	player.Interface = INTER_MINIBOOK | INTER_MINIBACK | INTER_LIFE_MANA;
+	player.m_selectedInstantSpell = SPELL_NONE;
 	player.physics.cyl.height = player.baseHeight();
 	player.physics.cyl.radius = player.baseRadius();
 	player.lifePool.current = player.m_lifeMaxWithoutMods = player.lifePool.max = 100.f;
