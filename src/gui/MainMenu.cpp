@@ -1758,6 +1758,9 @@ void init() override {
     addControlRow(CONTROLS_CUST_SPELL_PREV,    "system_menus_options_input_customize_controls_spell_prev");
     addControlRow(CONTROLS_CUST_SPELL_NEXT,    "system_menus_options_input_customize_controls_spell_next");
 	addControlRow(CONTROLS_CUST_SPELL_CAST,        "system_menus_options_input_customize_controls_spell_cast");
+	addControlRow(CONTROLS_CUST_USE_ITEM, "system_menus_options_input_customize_controls_use_item");
+addControlRow(CONTROLS_CUST_NEW_INVENTORY,     "system_menus_options_input_customize_controls_new_inventory");
+addControlRow(CONTROLS_CUST_OFFER_ITEM, "system_menus_options_input_customize_controls_offer_item");
     addBackButton(Page_OptionsInputCustomizeKeys2);
     {
         std::string_view label = getLocalised("system_menus_options_input_customize_default");

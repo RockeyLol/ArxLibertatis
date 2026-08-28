@@ -150,8 +150,12 @@ Vec2s MemoMouse;
 
 Entity * FlyingOverIO = nullptr;
 Entity * STARTED_ACTION_ON_IO = nullptr;
-
+// Глобальная переменная для "предлагаемого" предмета
+Entity * g_offeredItem = nullptr;
+// Глобальная переменная для предмета, выбранного для использования на цели
+Entity * g_itemToUse = nullptr;
 INTERFACE_TC g_bookResouces = INTERFACE_TC();
+
 
 Note g_note;
 
@@ -639,7 +643,7 @@ extern PlatformInstant REQUEST_JUMP;
 void ArxGame::managePlayerControls() {
 	
 	ARX_PROFILE_FUNC();
-	
+
 	if(eeMouseDoubleClick1() && !(player.Interface & INTER_COMBATMODE) && !player.doingmagic
 	   && !g_secondaryInventoryHud.containsPos(DANAEMouse) && !g_playerInventoryHud.containsPos(DANAEMouse)
 	   && !g_cursorOverBook && eMouseState != MOUSE_IN_NOTE) {
@@ -1189,16 +1193,26 @@ if (GInput->actionNowPressed(CONTROLS_CUST_INSTANT_MAGIC)) {
     }
 
     player.Interface ^= INTER_INSTANT_MAGIC;
-    if (player.Interface & INTER_INSTANT_MAGIC) {
-        MAGICMODE = true;
-        TRUE_PLAYER_MOUSELOOK_ON = false;
-        bInverseInventory = false;
-        bForceEscapeFreeLook = false;
-    } else {
-        TRUE_PLAYER_MOUSELOOK_ON = true;
-    }
+   if (player.Interface & INTER_INSTANT_MAGIC) {
+    MAGICMODE = true;
+    bInverseInventory = false;
+    bForceEscapeFreeLook = false;
+} else {
+    MAGICMODE = false;
+}
 }
 // --- КОНЕЦ: Логика мгновенной магии ---
+// --- НАЧАЛО: Логика нового инвентаря ---
+if (GInput->actionNowPressed(CONTROLS_CUST_NEW_INVENTORY)) {
+    player.Interface ^= INTER_NEW_INVENTORY;
+    if (player.Interface & INTER_NEW_INVENTORY) {
+        MAGICMODE = true;
+        bInverseInventory = false;
+    } else {
+        MAGICMODE = false;
+    }
+}
+// --- КОНЕЦ: Логика нового инвентаря ---
 
     // Check For Combat Mode ON/OFF
     if(   eeMousePressed1()
@@ -1414,25 +1428,23 @@ void ArxGame::manageKeyMouse() {
 		}
 		
 		if((eMouseState == MOUSE_IN_WORLD ||
-		    (eMouseState == MOUSE_IN_BOOK &&
-		     (!g_cursorOverBook || g_playerBook.currentPage() == BOOKMODE_MINIMAP))) &&
-		   !config.input.mouseLookToggle &&
-		   TRUE_PLAYER_MOUSELOOK_ON &&
-		   !(EERIEMouseButton & 2) &&
-		   !SPECIAL_DRAW_WEAPON &&
-		   !GInput->actionPressed(CONTROLS_CUST_FREELOOK)) {
-			TRUE_PLAYER_MOUSELOOK_ON = false;
-		}
+	    (eMouseState == MOUSE_IN_BOOK &&
+	     (!g_cursorOverBook || g_playerBook.currentPage() == BOOKMODE_MINIMAP))) &&
+	   !config.input.mouseLookToggle &&
+	   TRUE_PLAYER_MOUSELOOK_ON &&
+	   !(EERIEMouseButton & 2) &&
+	   !SPECIAL_DRAW_WEAPON &&
+	   !GInput->actionPressed(CONTROLS_CUST_FREELOOK)) {
+		TRUE_PLAYER_MOUSELOOK_ON = false;
+	}
 		
-		PLAYER_MOUSELOOK_ON = TRUE_PLAYER_MOUSELOOK_ON;
+	// Разрешаем вращение камерой всегда, когда это разрешено игрой (включая открытые меню)
+	PLAYER_MOUSELOOK_ON = TRUE_PLAYER_MOUSELOOK_ON;
 		
 		if(player.doingmagic == 2 && config.input.mouseLookToggle)
-			PLAYER_MOUSELOOK_ON = false;
-	}
-
-	if(ARXmenu.mode() != Mode_InGame) {
 		PLAYER_MOUSELOOK_ON = false;
-	}
+}
+ // <-- ДОБАВЬТЕ ЭТУ СКОБКУ!
 	
 	// Checks For MouseGrabbing/Restoration after Grab
 	bool bRestoreCoordMouse = true;
@@ -1776,38 +1788,36 @@ void ArxGame::manageEditorControls() {
 	
 	g_secondaryInventoryHud.updateInputButtons();
 	
-	// Single Click On Object
-	if(   eeMouseUp1()
-	   && FlyingOverIO
-	   && !g_draggedEntity
-	) {
-		
-			SendIOScriptEvent(entities.player(), FlyingOverIO, SM_CLICKED);
-	bool bOk = true;
-	Entity * container = locateInInventories(FlyingOverIO).container;
-	if(container && (container->ioflags & IO_SHOP)) {
-		// Cannot pick up items in shop inventories
-		bOk = false;
-	}
-	// МГНОВЕННЫЙ ПОДБОР: если это предмет и его можно подобрать, сразу забираем в инвентарь
-	if(   bOk
-	   && (FlyingOverIO->ioflags & IO_ITEM)
-	   && !(FlyingOverIO->ioflags & IO_MOVABLE)
-	   && !g_playerInventoryHud.containsPos(DANAEMouse)
-	   && !ARX_INTERFACE_MouseInBook()
-	) {
-		if(FlyingOverIO->ioflags & IO_GOLD) {
-			ARX_SOUND_PlayInterface(g_snd.GOLD);
-		}
-		ARX_SOUND_PlayInterface(g_snd.INVSTD);
-		while(FlyingOverIO && entities.player()->inventory->insert(FlyingOverIO)) {
-			FlyingOverIO = InterClick(DANAEMouse);
-			ARX_INVENTORY_IdentifyIO(FlyingOverIO);
-		}
-		// If there is no space, leave the item where it is
-		FlyingOverIO = nullptr;
-	}
-	}
+	 // Single Click On Object
+ if(   eeMouseUp1()
+    && FlyingOverIO
+    && !g_draggedEntity
+ ) {
+ 	SendIOScriptEvent(entities.player(), FlyingOverIO, SM_CLICKED);
+ 	
+ 	bool bOk = true;
+ 	Entity * container = locateInInventories(FlyingOverIO).container;
+ 	if(container && (container->ioflags & IO_SHOP)) {
+ 		bOk = false;
+ 	}
+ 	
+ 	if(   bOk
+ 	   && (FlyingOverIO->ioflags & IO_ITEM)
+ 	   && !(FlyingOverIO->ioflags & IO_MOVABLE)
+ 	   && !g_playerInventoryHud.containsPos(DANAEMouse)
+ 	   && !ARX_INTERFACE_MouseInBook()
+ 	) {
+ 		if(FlyingOverIO->ioflags & IO_GOLD) {
+ 			ARX_SOUND_PlayInterface(g_snd.GOLD);
+ 		}
+ 		ARX_SOUND_PlayInterface(g_snd.INVSTD);
+ 		while(FlyingOverIO && entities.player()->inventory->insert(FlyingOverIO)) {
+ 			FlyingOverIO = InterClick(DANAEMouse);
+ 			ARX_INVENTORY_IdentifyIO(FlyingOverIO);
+ 		}
+ 		FlyingOverIO = nullptr;
+ 	}
+ }
 	
 	if(!(player.Interface & INTER_COMBATMODE)) {
 		
@@ -1894,8 +1904,8 @@ void ArxGame::manageEditorControls() {
 		if(eeMouseDoubleClick1() && !COMBINE && FlyingOverIO && (FlyingOverIO->ioflags & IO_ITEM)) {
 			
 			bool accept_combine = true;
-			Entity * container = locateInInventories(FlyingOverIO).container;
-			if(container && (container->ioflags & IO_SHOP)) {
+			Entity * cont = locateInInventories(FlyingOverIO).container;
+			if(cont && (cont->ioflags & IO_SHOP)) {
 				// Cannot combine items in shop inventories
 				accept_combine = false;
 			}
@@ -2069,4 +2079,129 @@ if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_NEXT)) {
         Rectf iconRect(startX, startY, startX + iconSize, startY + iconSize);
         EERIEDrawBitmap(iconRect, 0.0001f, spellicons[currentSpell].tc, Color::white);
     }
+}
+//-----------------------------------------------------------------------------
+// Новый инвентарь - горизонтальное меню внизу экрана
+//-----------------------------------------------------------------------------
+void ARX_INTERFACE_RenderNewInventory() {
+    if (!(player.Interface & INTER_NEW_INVENTORY)) {
+        // Сброс выбранного предмета при закрытии меню
+        g_offeredItem = nullptr;
+        return;
+    }
+
+    // Валидация: если предмет был уничтожен или выброшен
+    if (g_offeredItem) {
+        InventoryPos checkPos = locateInInventories(g_offeredItem);
+        if (!checkPos.container || checkPos.container != entities.player()) {
+            g_offeredItem = nullptr;
+        }
+    }
+
+    // Собираем список предметов в инвентаре
+    std::vector<Entity *> items;
+    for (Entity & entity : entities(IO_ITEM)) {
+        InventoryPos pos = locateInInventories(&entity);
+        if (pos.container && pos.container == entities.player()) {
+            items.push_back(&entity);
+        }
+    }
+
+    if (items.empty()) {
+        return;
+    }
+
+    static int selectedIndex = 0;
+    if (selectedIndex >= (int)items.size()) selectedIndex = 0;
+
+    if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_PREV)) {
+        selectedIndex--;
+        if (selectedIndex < 0) selectedIndex = (int)items.size() - 1;
+    }
+    if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_NEXT)) {
+        selectedIndex++;
+        if (selectedIndex >= (int)items.size()) selectedIndex = 0;
+    }
+
+    // Параметры отрисовки - горизонтальное меню чуть ниже прицела
+    float iconSize = 24.f * g_sizeRatio.x;
+    float spacing = 8.f * g_sizeRatio.x;
+    float menuHeight = iconSize + 20.f * g_sizeRatio.y;
+    float totalWidth = std::min((float)items.size() * (iconSize + spacing) - spacing, g_size.width() * 0.8f);
+    float startX = (g_size.width() - totalWidth) / 2.f;
+    float startY = (g_size.height() / 2.f) + 120.f * g_sizeRatio.y;
+
+    // Полупрозрачный фон
+    static TextureContainer * bgTexture = nullptr;
+    if (!bgTexture) {
+        bgTexture = TextureContainer::LoadUI("graph/interface/book/spellbook");
+    }
+    if (bgTexture) {
+        Rectf bgRect(startX - 10.f, startY - 10.f, startX + totalWidth + 10.f, startY + menuHeight + 10.f);
+        EERIEDrawBitmap(bgRect, 0.0001f, bgTexture, Color(0, 0, 0, 150));
+    }
+
+    // Рисуем иконки предметов горизонтально
+    int visibleItems = std::min((int)items.size(), (int)(totalWidth / (iconSize + spacing)));
+    int startItem = std::max(0, selectedIndex - visibleItems / 2);
+
+    for (int i = 0; i < visibleItems && (startItem + i) < (int)items.size(); i++) {
+        int itemIndex = startItem + i;
+        Entity * item = items[itemIndex];
+        float x = startX + i * (iconSize + spacing);
+        float y = startY + 10.f * g_sizeRatio.y;
+
+        bool isSelected = (itemIndex == selectedIndex);
+
+        // Подсветка выбранного предмета
+        if (isSelected && bgTexture) {
+            Rectf highlightRect(x - 3.f, y - 3.f, x + iconSize + 3.f, y + iconSize + 3.f);
+            EERIEDrawBitmap(highlightRect, 0.00005f, bgTexture, Color(255, 215, 0, 150));
+        }
+
+        // Иконка предмета
+        if (item->m_icon) {
+            Rectf iconRect(x, y, x + iconSize, y + iconSize);
+            // Если предмет выбран для использования, рисуем его с зелёной подсветкой
+            Color iconColor = Color::white;
+            if (g_offeredItem && item == g_offeredItem) {
+                // Проверяем, что предмет все еще в инвентаре
+                InventoryPos pos = locateInInventories(g_offeredItem);
+                if (pos.container == entities.player()) {
+                    iconColor = Color(100, 255, 100, 255);
+                } else {
+                    g_offeredItem = nullptr;
+                }
+            }
+            EERIEDrawBitmap(iconRect, 0.0001f, item->m_icon, iconColor);
+        }
+    }
+
+    // Обработка кнопки "Использовать" (сразу использовать предмет)
+if (GInput->actionNowPressed(CONTROLS_CUST_USE_ITEM)) {
+    if (selectedIndex < (int)items.size()) {
+        Entity * selectedItem = items[selectedIndex];
+        if (selectedItem) {
+            SendIOScriptEvent(entities.player(), selectedItem, SM_INVENTORYUSE);
+            ARX_SOUND_PlayInterface(g_snd.INVSTD);
+        }
+    }
+}
+
+// Обработка выбора предмета для использования на цели (кнопка G) - используем COMBINE
+if (GInput->actionNowPressed(CONTROLS_CUST_OFFER_ITEM)) {
+    if (selectedIndex < (int)items.size()) {
+        Entity * selectedItem = items[selectedIndex];
+        if (selectedItem) {
+            // Используем старую систему COMBINE вместо g_offeredItem
+            if (COMBINE == selectedItem) {
+                COMBINE = nullptr;
+            } else {
+                COMBINE = selectedItem;
+                updateCombineFlags(COMBINE);
+            }
+            ARX_SOUND_PlayInterface(g_snd.INVSTD);
+        }
+    }
+}
 }
