@@ -1782,37 +1782,31 @@ void ArxGame::manageEditorControls() {
 	   && !g_draggedEntity
 	) {
 		
-		SendIOScriptEvent(entities.player(), FlyingOverIO, SM_CLICKED);
-		
-		bool bOk = true;
-		Entity * container = locateInInventories(FlyingOverIO).container;
-		if(container && (container->ioflags & IO_SHOP)) {
-			// Cannot shift click items in shop inventories
-			bOk = false;
+			SendIOScriptEvent(entities.player(), FlyingOverIO, SM_CLICKED);
+	bool bOk = true;
+	Entity * container = locateInInventories(FlyingOverIO).container;
+	if(container && (container->ioflags & IO_SHOP)) {
+		// Cannot pick up items in shop inventories
+		bOk = false;
+	}
+	// МГНОВЕННЫЙ ПОДБОР: если это предмет и его можно подобрать, сразу забираем в инвентарь
+	if(   bOk
+	   && (FlyingOverIO->ioflags & IO_ITEM)
+	   && !(FlyingOverIO->ioflags & IO_MOVABLE)
+	   && !g_playerInventoryHud.containsPos(DANAEMouse)
+	   && !ARX_INTERFACE_MouseInBook()
+	) {
+		if(FlyingOverIO->ioflags & IO_GOLD) {
+			ARX_SOUND_PlayInterface(g_snd.GOLD);
 		}
-		
-		if(   !(FlyingOverIO->ioflags & IO_MOVABLE)
-		   && (FlyingOverIO->ioflags & IO_ITEM)
-		   && bOk
-		   && GInput->actionPressed(CONTROLS_CUST_STEALTHMODE)
-		   && !g_playerInventoryHud.containsPos(DANAEMouse)
-		   && !ARX_INTERFACE_MouseInBook()
-		) {
-			
-			if(FlyingOverIO->ioflags & IO_GOLD) {
-				ARX_SOUND_PlayInterface(g_snd.GOLD);
-			}
-			
-			ARX_SOUND_PlayInterface(g_snd.INVSTD);
-			
-			while(FlyingOverIO && entities.player()->inventory->insert(FlyingOverIO)) {
-				FlyingOverIO = InterClick(DANAEMouse);
-				ARX_INVENTORY_IdentifyIO(FlyingOverIO);
-			}
-			// If there is no space, leave the item where it is
-			
-			FlyingOverIO = nullptr;
+		ARX_SOUND_PlayInterface(g_snd.INVSTD);
+		while(FlyingOverIO && entities.player()->inventory->insert(FlyingOverIO)) {
+			FlyingOverIO = InterClick(DANAEMouse);
+			ARX_INVENTORY_IdentifyIO(FlyingOverIO);
 		}
+		// If there is no space, leave the item where it is
+		FlyingOverIO = nullptr;
+	}
 	}
 	
 	if(!(player.Interface & INTER_COMBATMODE)) {
