@@ -1125,28 +1125,30 @@ void ArxGame::managePlayerControls() {
  if(GInput->actionNowPressed(CONTROLS_CUST_BOOK))
  	g_playerBook.toggle();
 
- // --- НАЧАЛО: Логика мгновенной магии (с задержкой и фиксом зависания) ---
+// --- НАЧАЛО: Логика мгновенной магии (с задержкой) ---
 
 // Статические переменные для отложенного каста
 static SpellType pendingInstantSpell = SPELL_NONE;
 static PlatformInstant instantCastStartTime = 0;
+static bool bIsCastingInCombat = false; // Флаг для каста в бою
 
 // 1. Обработка нажатия кнопки каста
 if (player.m_selectedInstantSpell != SPELL_NONE && GInput->actionNowPressed(CONTROLS_CUST_SPELL_CAST)) {
     Entity * io = entities.player();
     
+    // Запоминаем заклинание для отложенного каста
+    pendingInstantSpell = player.m_selectedInstantSpell;
+    instantCastStartTime = g_platformTime.frameStart();
+    bIsCastingInCombat = (player.Interface & INTER_COMBATMODE) ? true : false;
+    
     // Запускаем анимацию каста ТОЛЬКО если игрок НЕ в боевом режиме.
-    // В бою рука занята оружием, и трогать её анимацию нельзя - это ломает боевой режим.
     if (io && !(player.Interface & INTER_COMBATMODE)) {
         if (io->anims[ANIM_CAST_CYCLE]) {
             io->animlayer[1].cur_anim = io->anims[ANIM_CAST_CYCLE];
             io->animlayer[1].ctime = AnimationDuration(0);
-            player.doingmagic = 2;
         }
     }
-    
-    // Применяем заклинание
-    ARX_SPELLS_Launch(player.m_selectedInstantSpell, *io, SpellcastFlags(), -1, nullptr, 0);
+    // В боевом режиме анимацию НЕ запускаем!
     
     // Закрываем меню магии после каста
     if (player.Interface & INTER_INSTANT_MAGIC) {
@@ -1156,11 +1158,11 @@ if (player.m_selectedInstantSpell != SPELL_NONE && GInput->actionNowPressed(CONT
     }
 }
 
-// 2. Обработка отложенного каста (выполняется каждый кадр, если есть отложенное заклинание)
+// 2. Обработка отложенного каста (выполняется каждый кадр)
 if (pendingInstantSpell != SPELL_NONE) {
     PlatformDuration elapsed = g_platformTime.frameStart() - instantCastStartTime;
     
-    // Ждем 250 миллисекунд, чтобы рука успела подняться
+    // Ждем 250 миллисекунд
     if (elapsed > 250ms) {
         Entity * io = entities.player();
         
@@ -1168,38 +1170,41 @@ if (pendingInstantSpell != SPELL_NONE) {
         if (io) {
             ARX_SPELLS_Launch(pendingInstantSpell, *io, SpellcastFlags(), -1, nullptr, 0);
             
-            // СБРОС АНИМАЦИИ: Очищаем слой, чтобы движок плавно вернул руку к оружию или в покой
-            // Это предотвращает "зависание" руки в позе каста
-            io->animlayer[1].cur_anim = nullptr; 
-            io->animlayer[1].ctime = AnimationDuration(0);
+            // Сбрасываем анимацию ТОЛЬКО если НЕ в боевом режиме
+            // В боевом режиме анимацию оружия НЕ ТРОГАЕМ!
+            if (!(player.Interface & INTER_COMBATMODE)) {
+                io->animlayer[1].cur_anim = nullptr; 
+                io->animlayer[1].ctime = AnimationDuration(0);
+            }
         }
         
-        // Сбрасываем состояние отложенного каста
         pendingInstantSpell = SPELL_NONE;
         instantCastStartTime = 0;
+        bIsCastingInCombat = false;
     }
 }
 
-// 3. Открытие/закрытие меню магии (отдельно от каста)
+// 3. Открытие/закрытие меню магии (ОРИГИНАЛ)
 if (GInput->actionNowPressed(CONTROLS_CUST_INSTANT_MAGIC)) {
-    // Если в этот момент идет отложенный каст, отменяем его при открытии меню
+    // Если идет отложенный каст, отменяем его
     if (pendingInstantSpell != SPELL_NONE) {
         pendingInstantSpell = SPELL_NONE;
         instantCastStartTime = 0;
+        bIsCastingInCombat = false;
         Entity * io = entities.player();
-        if (io) {
+        if (io && !(player.Interface & INTER_COMBATMODE)) {
             io->animlayer[1].cur_anim = nullptr;
         }
     }
 
     player.Interface ^= INTER_INSTANT_MAGIC;
-   if (player.Interface & INTER_INSTANT_MAGIC) {
-    MAGICMODE = true;
-    bInverseInventory = false;
-    bForceEscapeFreeLook = false;
-} else {
-    MAGICMODE = false;
-}
+    if (player.Interface & INTER_INSTANT_MAGIC) {
+        MAGICMODE = true;
+        bInverseInventory = false;
+        bForceEscapeFreeLook = false;
+    } else {
+        MAGICMODE = false;
+    }
 }
 // --- КОНЕЦ: Логика мгновенной магии ---
 // --- НАЧАЛО: Логика нового инвентаря ---
@@ -1235,20 +1240,23 @@ if (GInput->actionNowPressed(CONTROLS_CUST_NEW_INVENTORY)) {
 		}
 	}
 	
-	if(lOldTruePlayerMouseLook != TRUE_PLAYER_MOUSELOOK_ON) {
-		bInverseInventory = false;
-		if(TRUE_PLAYER_MOUSELOOK_ON) {
-			if(!CSEND) {
-				CSEND = 1;
-				SendIOScriptEvent(nullptr, entities.player(), SM_EXPLORATIONMODE);
-			}
-		}
-	} else {
-		if(CSEND) {
-			CSEND = 0;
-			SendIOScriptEvent(nullptr, entities.player(), SM_CURSORMODE);
-		}
-	}
+	// НЕ меняем режим мыши, если открыто меню
+if(ARXmenu.mode() == Mode_InGame) {
+    if(lOldTruePlayerMouseLook != TRUE_PLAYER_MOUSELOOK_ON) {
+        bInverseInventory = false;
+        if(TRUE_PLAYER_MOUSELOOK_ON) {
+            if(!CSEND) {
+                CSEND = 1;
+                SendIOScriptEvent(nullptr, entities.player(), SM_EXPLORATIONMODE);
+            }
+        }
+    } else {
+        if(CSEND) {
+            CSEND = 0;
+            SendIOScriptEvent(nullptr, entities.player(), SM_CURSORMODE);
+        }
+    }
+}
 	
 	static PlayerInterfaceFlags lOldInterfaceTemp = 0;
 	
@@ -1450,23 +1458,18 @@ void ArxGame::manageKeyMouse() {
 	bool bRestoreCoordMouse = true;
 	
 	static bool LAST_PLAYER_MOUSELOOK_ON = false;
-	bool mouselook = PLAYER_MOUSELOOK_ON && !BLOCK_PLAYER_CONTROLS && !isInCinematic();
-	if(mouselook && !LAST_PLAYER_MOUSELOOK_ON) {
-		
-		MemoMouse = DANAEMouse;
-		GInput->setMouseMode(Mouse::Relative);
-		
-	} else if(!mouselook && LAST_PLAYER_MOUSELOOK_ON) {
-		
-		GInput->setMouseMode(Mouse::Absolute);
-		DANAEMouse = MemoMouse;
-		
-		if(mainApp->getWindow()->isFullScreen()) {
-			GInput->setMousePosAbs(DANAEMouse);
-		}
-		
-		bRestoreCoordMouse = false;
-	}
+	bool mouselook = PLAYER_MOUSELOOK_ON && !BLOCK_PLAYER_CONTROLS && !isInCinematic() && ARXmenu.mode() == Mode_InGame;
+if(mouselook && !LAST_PLAYER_MOUSELOOK_ON) {
+    MemoMouse = DANAEMouse;
+    GInput->setMouseMode(Mouse::Relative);
+} else if(!mouselook && LAST_PLAYER_MOUSELOOK_ON) {
+    GInput->setMouseMode(Mouse::Absolute);
+    DANAEMouse = MemoMouse;
+    if(mainApp->getWindow()->isFullScreen()) {
+        GInput->setMousePosAbs(DANAEMouse);
+    }
+    bRestoreCoordMouse = false;
+}
 	
 	LAST_PLAYER_MOUSELOOK_ON = mouselook;
 	PLAYER_ROTATION = 0;
