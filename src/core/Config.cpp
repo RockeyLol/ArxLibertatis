@@ -183,6 +183,9 @@ constexpr const ActionKey actions[NUM_ACTION_KEY] = {
 	ActionKey(Keyboard::Key_LeftBracket),  // SPELL_PREV (клавиша [)
     ActionKey(Keyboard::Key_RightBracket), // SPELL_NEXT (клавиша ])
 	ActionKey(Keyboard::Key_V), // SPELL_CAST (каст заклинания)
+	ActionKey(Keyboard::Key_E),            // USE_ITEM (клавиша E)
+	ActionKey(Keyboard::Key_F8), // NEW_INVENTORY
+    ActionKey(Keyboard::Key_G),	// OFFER_ITEM (клавиша G)
 };
 
 } // namespace Default
@@ -328,6 +331,9 @@ constexpr const std::string_view actions[NUM_ACTION_KEY] = {
 	"spell_prev ",
     "spell_next ",
 	"spell_cast ",
+	"use_item ",
+	"new_inventory ",
+	"offer_item ",
 };
 
 // Misc options
