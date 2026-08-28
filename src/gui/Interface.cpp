@@ -1117,39 +1117,85 @@ void ArxGame::managePlayerControls() {
          }
      }
  }
-        // Checks BOOK Key Status.
-    if(GInput->actionNowPressed(CONTROLS_CUST_BOOK))
-        g_playerBook.toggle();
+ // Checks BOOK Key Status.
+ if(GInput->actionNowPressed(CONTROLS_CUST_BOOK))
+ 	g_playerBook.toggle();
 
-// --- НАЧАЛО: Логика мгновенной магии ---
-if (GInput->actionNowPressed(CONTROLS_CUST_INSTANT_MAGIC)) {
-    player.Interface ^= INTER_INSTANT_MAGIC;
-    if (player.Interface & INTER_INSTANT_MAGIC) {
-        MAGICMODE = true;
-        TRUE_PLAYER_MOUSELOOK_ON = false;
-        bInverseInventory = false;  // <-- ДОБАВЛЕНО: сбрасываем инверсию инвентаря
-        bForceEscapeFreeLook = false;  // <-- ДОБАВЛЕНО: сбрасываем принудительный выход из freelook
-    } else {
-        TRUE_PLAYER_MOUSELOOK_ON = true;
-    }
-}
+ // --- НАЧАЛО: Логика мгновенной магии (с задержкой и фиксом зависания) ---
 
+// Статические переменные для отложенного каста
+static SpellType pendingInstantSpell = SPELL_NONE;
+static PlatformInstant instantCastStartTime = 0;
+
+// 1. Обработка нажатия кнопки каста
 if (player.m_selectedInstantSpell != SPELL_NONE && GInput->actionNowPressed(CONTROLS_CUST_SPELL_CAST)) {
     Entity * io = entities.player();
     
-    // Запускаем анимацию каста на втором слое (руки)
-    if (io && io->anims[ANIM_CAST_CYCLE]) {
-        io->animlayer[1].cur_anim = io->anims[ANIM_CAST_CYCLE];
-        io->animlayer[1].ctime = AnimationDuration(0);
-        player.doingmagic = 2;
+    // Запускаем анимацию каста ТОЛЬКО если игрок НЕ в боевом режиме.
+    // В бою рука занята оружием, и трогать её анимацию нельзя - это ломает боевой режим.
+    if (io && !(player.Interface & INTER_COMBATMODE)) {
+        if (io->anims[ANIM_CAST_CYCLE]) {
+            io->animlayer[1].cur_anim = io->anims[ANIM_CAST_CYCLE];
+            io->animlayer[1].ctime = AnimationDuration(0);
+            player.doingmagic = 2;
+        }
     }
     
+    // Применяем заклинание
     ARX_SPELLS_Launch(player.m_selectedInstantSpell, *io, SpellcastFlags(), -1, nullptr, 0);
     
+    // Закрываем меню магии после каста
     if (player.Interface & INTER_INSTANT_MAGIC) {
         player.Interface &= ~INTER_INSTANT_MAGIC;
         TRUE_PLAYER_MOUSELOOK_ON = true;
         MAGICMODE = false;
+    }
+}
+
+// 2. Обработка отложенного каста (выполняется каждый кадр, если есть отложенное заклинание)
+if (pendingInstantSpell != SPELL_NONE) {
+    PlatformDuration elapsed = g_platformTime.frameStart() - instantCastStartTime;
+    
+    // Ждем 250 миллисекунд, чтобы рука успела подняться
+    if (elapsed > 250ms) {
+        Entity * io = entities.player();
+        
+        // Применяем заклинание
+        if (io) {
+            ARX_SPELLS_Launch(pendingInstantSpell, *io, SpellcastFlags(), -1, nullptr, 0);
+            
+            // СБРОС АНИМАЦИИ: Очищаем слой, чтобы движок плавно вернул руку к оружию или в покой
+            // Это предотвращает "зависание" руки в позе каста
+            io->animlayer[1].cur_anim = nullptr; 
+            io->animlayer[1].ctime = AnimationDuration(0);
+        }
+        
+        // Сбрасываем состояние отложенного каста
+        pendingInstantSpell = SPELL_NONE;
+        instantCastStartTime = 0;
+    }
+}
+
+// 3. Открытие/закрытие меню магии (отдельно от каста)
+if (GInput->actionNowPressed(CONTROLS_CUST_INSTANT_MAGIC)) {
+    // Если в этот момент идет отложенный каст, отменяем его при открытии меню
+    if (pendingInstantSpell != SPELL_NONE) {
+        pendingInstantSpell = SPELL_NONE;
+        instantCastStartTime = 0;
+        Entity * io = entities.player();
+        if (io) {
+            io->animlayer[1].cur_anim = nullptr;
+        }
+    }
+
+    player.Interface ^= INTER_INSTANT_MAGIC;
+    if (player.Interface & INTER_INSTANT_MAGIC) {
+        MAGICMODE = true;
+        TRUE_PLAYER_MOUSELOOK_ON = false;
+        bInverseInventory = false;
+        bForceEscapeFreeLook = false;
+    } else {
+        TRUE_PLAYER_MOUSELOOK_ON = true;
     }
 }
 // --- КОНЕЦ: Логика мгновенной магии ---
@@ -1995,31 +2041,29 @@ void ARX_INTERFACE_RenderInstantMagic() {
     static int selectedIndex = 0;
     if (selectedIndex >= (int)knownSpells.size()) selectedIndex = 0;
 
-    // Прокрутка стрелками
-        if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_PREV)) {
-        selectedIndex--;
-        if (selectedIndex < 0) selectedIndex = (int)knownSpells.size() - 1;
-    }
-    if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_NEXT)) {
-        selectedIndex++;
-        if (selectedIndex >= (int)knownSpells.size()) selectedIndex = 0;
-    }
+    // Прокрутка настраиваемыми кнопками (назначаются в настройках игры)
+if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_PREV)) {
+    selectedIndex--;
+    if (selectedIndex < 0) selectedIndex = (int)knownSpells.size() - 1;
+}
+if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_NEXT)) {
+    selectedIndex++;
+    if (selectedIndex >= (int)knownSpells.size()) selectedIndex = 0;
+}
 
     // Запоминаем выбранное заклинание
     player.m_selectedInstantSpell = knownSpells[selectedIndex];
 
     // Параметры отрисовки
     float iconSize = 48.f * g_sizeRatio.x;
-float startX = (g_size.width() - iconSize) / 2.f;
-float startY = g_size.height() - iconSize - 60.f * g_sizeRatio.y;
+    float startX = (g_size.width() - iconSize) / 2.f;
+    float startY = g_size.height() - iconSize - 60.f * g_sizeRatio.y;
 
-    // Полупрозрачный фон
+    // Золотая рамка
     static TextureContainer * bgTexture = nullptr;
     if (!bgTexture) {
         bgTexture = TextureContainer::LoadUI("graph/interface/book/spellbook");
     }
-
-    // Золотая рамка
     if (bgTexture) {
         Rectf frameRect(startX - 5.f, startY - 5.f, startX + iconSize + 5.f, startY + iconSize + 5.f);
         EERIEDrawBitmap(frameRect, 0.00005f, bgTexture, Color(255, 215, 0, 200));
