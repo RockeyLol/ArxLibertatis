@@ -1,5 +1,6 @@
 /*
  * Copyright 2015-2022 Arx Libertatis Team (see the AUTHORS file)
+ * Copyright 2026 kingzmanh
  *
  * This file is part of Arx Libertatis.
  *
@@ -43,9 +44,10 @@ enum MENUSTATE {
 	Page_OptionsInput,
 	Page_OptionsInputCustomizeKeys1,
 	Page_OptionsInputCustomizeKeys2,
-	Page_OptionsInputCustomizeKeys3,
+	Page_OptionsInputCustomizeKeys3, // From kingzmanh fork
 	Page_QuitConfirm,
 	Page_Localization,
+	Page_Coop, // From coop fork
 };
 
 enum WidgetType {
