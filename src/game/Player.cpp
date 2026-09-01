@@ -1,5 +1,6 @@
 /*
  * Copyright 2011-2022 Arx Libertatis Team (see the AUTHORS file)
+ * Copyright 2026 kingzmanh
  *
  * This file is part of Arx Libertatis.
  *
@@ -115,6 +116,9 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "math/Random.h"
 #include "math/Vector.h"
 
+#include "net/CoopNet.h"
+#include "net/CoopPlayer.h"
+
 #include "physics/Collisions.h"
 #include "physics/Attractors.h"
 #include "physics/Projectile.h"
@@ -219,6 +223,9 @@ void ARX_KEYRING_Init() {
 
 //! Add a key to Keyring
 void ARX_KEYRING_Add(std::string_view key) {
+	// A locked door is only locked once. Whoever finds the key, both of them
+	// can open it, or one player ends up shut out of half the fortress.
+	coop::reportKey(key);
 	g_playerKeyring.emplace_back(key);
 }
 
@@ -329,6 +336,11 @@ void ARX_Player_Rune_Add(RuneFlag rune) {
 	});
 	
 	player.rune_flags |= rune;
+
+	// Runes are knowledge, and the two of them are learning the same magic.
+	// reportRunes() ignores this while we are applying THEIR runes, so the two
+	// machines cannot bounce the same discovery back and forth.
+	coop::reportRunes();
 	
 	size_t spellsAfter = std::count_if(spellicons.begin(), spellicons.end(), [](const SPELL_ICON & spell) {
 		return !spell.bSecret && player.hasAllRunes(spell.symbols);
@@ -347,6 +359,9 @@ void ARX_Player_Rune_Remove(RuneFlag rune) {
 
 //! Add quest "quest" to player Questbook
 void ARX_PLAYER_Quest_Add(std::string_view quest) {
+	// One story, one journal. It does not matter which of them was standing
+	// there when it happened; they are both playing the same playthrough.
+	coop::reportQuest(quest);
 	g_playerQuestLogEntries.emplace_back(quest);
 	g_playerBook.clearJournal();
 }
@@ -904,9 +919,17 @@ static void ARX_PLAYER_LEVEL_UP() {
  * \brief Modify player XP by adding "val" to it
  */
 void ARX_PLAYER_Modify_XP(long val) {
-	
+
+	/*
+	 * Experience is earned individually and awarded to both. Each player keeps
+	 * their own total and levels on their own schedule - they may not even have
+	 * started at the same level - but neither is left behind because the other
+	 * happened to land the killing blow or open the chest.
+	 */
+	coop::reportReward(val, 0);
+
 	player.xp += val;
-	
+
 	for(short i = player.level + 1; i < 11; i++) {
 		if(player.xp >= GetXPforLevel(i)) {
 			ARX_PLAYER_LEVEL_UP();
@@ -1005,14 +1028,17 @@ void ARX_PLAYER_FrameCheck(PlatformDuration delta) {
 }
 TextureContainer * PLAYER_SKIN_TC = nullptr;
 
-void ARX_PLAYER_Restore_Skin() {
+/*!
+ * The four head textures a chosen face uses - bare, chainmail, mithril, leather.
+ *
+ * Lifted out of ARX_PLAYER_Restore_Skin so that the other player's body can ask
+ * the same question without a second copy of the table drifting out of step
+ * with this one.
+ */
+void ARX_PLAYER_SkinTextures(unsigned char skin, res::path & tx, res::path & tx2,
+                             res::path & tx3, res::path & tx4) {
 	
-	res::path tx;
-	res::path tx2;
-	res::path tx3;
-	res::path tx4;
-	
-	switch(player.skin) {
+	switch(skin) {
 		case 0:
 			tx  = "graph/obj3d/textures/npc_human_base_hero_head";
 			tx2 = "graph/obj3d/textures/npc_human_chainmail_hero_head";
@@ -1056,25 +1082,78 @@ void ARX_PLAYER_Restore_Skin() {
 			tx4 = "graph/obj3d/textures/npc_human_leather_hero_head";
 			break;
 	}
-
-	TextureContainer * tmpTC;
 	
-	// TODO maybe it would be better to replace the textures in the player object instead of replacing the texture data for all objects that use these textures
+}
 
-	if(PLAYER_SKIN_TC && !tx.empty())
-		PLAYER_SKIN_TC->LoadFile(tx);
+void ARX_PLAYER_Restore_Skin() {
+	
+	res::path tx;
+	res::path tx2;
+	res::path tx3;
+	res::path tx4;
+	
+	ARX_PLAYER_SkinTextures(player.skin, tx, tx2, tx3, tx4);
+	
+	/*
+	 * Rebind the head textures on this body rather than repainting the shared
+	 * ones - which is what the TODO that used to sit here asked for.
+	 *
+	 * The old way overwrote the PIXELS INSIDE those four textures, so every
+	 * model using them changed at once. With one hero in the world that was
+	 * invisible; with two it meant whoever picked a face last decided what BOTH
+	 * of them looked like, and there was no way to give the other player a face
+	 * of their own.
+	 */
+	/*
+	 * entities.get rather than entities.player(): player() is entries[0] with no
+	 * bounds check, and this is called before the hero entity exists as well as
+	 * after - it used to touch nothing but textures, so it never cared. get()
+	 * answers nullptr instead of reading off the end of an empty list.
+	 */
+	Entity * hero = entities.get(EntityHandle_Player);
+	ARX_PLAYER_ApplySkin(hero ? hero->obj : nullptr, player.skin);
 
-	tmpTC = TextureContainer::Find("graph/obj3d/textures/npc_human_chainmail_hero_head");
-	if(tmpTC && !tx2.empty())
-		tmpTC->LoadFile(tx2);
+}
 
-	tmpTC = TextureContainer::Find("graph/obj3d/textures/npc_human_chainmail_mithril_hero_head");
-	if(tmpTC && !tx3.empty())
-		tmpTC->LoadFile(tx3);
+/*!
+ * Put a chosen face on one body.
+ *
+ * Recognises every head texture the game has for a hero, whichever face it
+ * belongs to, so it can be called again to change from one face to another -
+ * and after a mesh rebuild, which brings the default textures back with it.
+ */
+void ARX_PLAYER_ApplySkin(EERIE_3DOBJ * obj, unsigned char skin) {
 
-	tmpTC = TextureContainer::Find("graph/obj3d/textures/npc_human_leather_hero_head");
-	if(tmpTC && !tx4.empty())
-		tmpTC->LoadFile(tx4);
+	if(!obj) {
+		return;
+	}
+
+	res::path want[4];
+	ARX_PLAYER_SkinTextures(skin, want[0], want[1], want[2], want[3]);
+
+	for(TextureContainer *& material : obj->materials) {
+
+		if(!material) {
+			continue;
+		}
+
+		bool replaced = false;
+		for(unsigned char face = 0; face <= 6 && !replaced; face++) {
+			res::path known[4];
+			ARX_PLAYER_SkinTextures(face, known[0], known[1], known[2], known[3]);
+			for(size_t slot = 0; slot < 4; slot++) {
+				if(material->m_texName == known[slot]) {
+					if(TextureContainer * chosen = TextureContainer::Load(want[slot])) {
+						material = chosen;
+					}
+					replaced = true;
+					break;
+				}
+			}
+		}
+
+	}
+
 }
 
 /*!
@@ -1583,7 +1662,7 @@ void ARX_PLAYER_Manage_Visual() {
  */
 void ARX_PLAYER_InitPlayer() {
 	player.Interface = INTER_MINIBOOK | INTER_MINIBACK | INTER_LIFE_MANA;
-	player.m_selectedInstantSpell = SPELL_NONE;
+	player.m_selectedInstantSpell = SPELL_NONE; // From kingzmanh fork
 	player.physics.cyl.height = player.baseHeight();
 	player.physics.cyl.radius = player.baseRadius();
 	player.lifePool.current = player.m_lifeMaxWithoutMods = player.lifePool.max = 100.f;
@@ -2233,6 +2312,13 @@ static void PlayerMovementIterate(float DeltaTime) {
 
 void ARX_PLAYER_Manage_Movement() {
 	
+	if(coop::travelHoldActive()) {
+		// Suspended mid-air while a travel completes - the same stillness a
+		// level load imposes. No motion, no landing, no fall damage.
+		return;
+	}
+	
+	
 	ARX_PROFILE_FUNC();
 	
 	// Is our player able to move ?
@@ -2285,6 +2371,12 @@ void ARX_PLAYER_Manage_Death() {
 	player.m_paralysed = false;
 	float ratio = (player.DeadTime - 2s) / 5s;
 
+	if(coop::updateReviveOpportunity()) {
+		// Death is not the end while the other player still stands: hold the
+		// fade short of the menu and wait for them to come stand by the body.
+		ratio = std::min(ratio, 0.8f);
+	}
+
 	if(ratio >= 1.f) {
 		ARX_MENU_Launch(false);
 		player.DeadTime = 0;
@@ -2335,6 +2427,14 @@ void ARX_PLAYER_PutPlayerInNormalStance() {
  * \brief Add gold to player purse
  */
 void ARX_PLAYER_AddGold(long _lValue) {
+	// A payment taken in the partner's name empties THEIR purse across the
+	// wire; ours was never part of the transaction.
+	if(_lValue < 0 && coop::chargePartner(_lValue)) {
+		return;
+	}
+	// Split the find rather than race for it: both purses grow by the same
+	// amount, so picking up a pile is never something to fall out over.
+	coop::reportReward(0, _lValue);
 	player.gold += _lValue;
 	g_hudRoot.purseIconGui.requestHalo();
 }
@@ -2355,6 +2455,8 @@ void ARX_PLAYER_AddGold(Entity * gold) {
 void ARX_PLAYER_Start_New_Quest() {
 	
 	LogInfo << "Starting a new playthrough";
+	
+	coop::clearStoryLedger();
 	
 	DanaeClearLevel();
 	SetEditMode();
@@ -2588,4 +2690,3 @@ void ARX_PLAYER_Reset_Fall()
 	Falling_Height = 50.f;
 	player.falling = false;
 }
-

@@ -1,5 +1,6 @@
 /*
  * Copyright 2011-2022 Arx Libertatis Team (see the AUTHORS file)
+ * Copyright 2026 kingzmanh
  *
  * This file is part of Arx Libertatis.
  *
@@ -79,11 +80,13 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "graphics/particle/ParticleEffects.h"
 #include "graphics/particle/Spark.h"
 
+#include "io/log/Logger.h"
 #include "io/resource/ResourcePath.h"
 
 #include "math/Random.h"
 #include "math/Vector.h"
 
+#include "net/CoopPlayer.h"
 #include "physics/Collisions.h"
 
 #include "platform/Platform.h"
@@ -92,6 +95,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "scene/Object.h"
 #include "scene/LinkedObject.h"
 #include "scene/GameSound.h"
+#include "net/CoopNet.h"
 #include "scene/Interactive.h"
 
 #include "script/Script.h"
@@ -153,18 +157,25 @@ void ARX_EQUIPMENT_ReleaseAll(Entity * io) {
 
 extern long EXITING;
 
-//! \brief Recreates player mesh from scratch
-static void applyTweak(EquipmentSlot equip, TweakType tw, std::string_view selection) {
-	
-	Entity * item = entities.get(player.equiped[equip]);
-	if(!item) {
+/*!
+ * Wear a piece of armour on a body.
+ *
+ * Armour is not hung off a character the way a weapon is - it changes the body
+ * itself, swapping a part of the mesh and repainting a named area of skin. That
+ * is why this is separate from linking an object to a hand.
+ *
+ * Takes whichever body is being dressed rather than always the player, so the
+ * same can be done to the other player's body in co-op: they are wearing the
+ * armour on their own machine, and it has to be put on the copy of them
+ * standing here.
+ */
+void ARX_EQUIPMENT_ApplyTweak(Entity * io, Entity * item, TweakType tw,
+                              std::string_view selection) {
+
+	if(!io || !io->obj || !item || !item->tweakerinfo) {
 		return;
 	}
-	
-	Entity * io = entities.player();
-	
-	arx_assert(item->tweakerinfo != nullptr);
-	
+
 	const IO_TWEAKER_INFO & tweak = *item->tweakerinfo;
 	
 	if(!tweak.filename.empty()) {
@@ -211,6 +222,15 @@ static void applyTweak(EquipmentSlot equip, TweakType tw, std::string_view selec
 		}
 	}
 	
+}
+
+//! The player's own body, dressed from whatever they have equipped.
+static void applyTweak(EquipmentSlot equip, TweakType tw, std::string_view selection) {
+	Entity * item = entities.get(player.equiped[equip]);
+	if(item) {
+		arx_assert(item->tweakerinfo != nullptr);
+		ARX_EQUIPMENT_ApplyTweak(entities.player(), item, tw, selection);
+	}
 }
 
 void ARX_EQUIPMENT_RecreatePlayerMesh() {
@@ -691,7 +711,23 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 							}
 						}
 
-						if(io_source == entities.player()) {
+						/*
+						 * A weapon wears against the world, never against your
+						 * companion.
+						 *
+						 * This charge is levied once per FRAME the blade is
+						 * inside a target - about three points across a single
+						 * swing. In the original game the only bodies in reach
+						 * were enemies you meant to hit, so that was fair. The
+						 * other player, though, stands beside you constantly,
+						 * and an ordinary swing at empty air clips them: three
+						 * points a swing against a bone, which has four, so it
+						 * shattered in your hands for nothing.
+						 */
+						if(io_source == entities.player() && !coop::isAvatarEntity(target)) {
+							LogWarning << "[coop-wear] IN-TARGET " << target->idString()
+							           << " charge=" << (g_framedelay * 0.006f)
+							           << " durability=" << io_weapon->durability;
 							ARX_DAMAGES_DurabilityCheck(io_weapon, g_framedelay * 0.006f);
 						}
 					}
@@ -767,6 +803,8 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 
 					if(HIT_SPARK) {
 						if(!io_source->isHit) {
+							LogWarning << "[coop-wear] HARD-OBJECT " << target->idString()
+							           << " charge=1.0 durability=" << io_weapon->durability;
 							ARX_DAMAGES_DurabilityCheck(io_weapon, 1.f);
 							io_source->isHit = true;
 							
@@ -789,6 +827,8 @@ bool ARX_EQUIPMENT_Strike_Check(Entity * io_source, Entity * io_weapon, float ra
 		if(ep) {
 			if(io_source == entities.player()) {
 				if(!io_source->isHit) {
+					LogWarning << "[coop-wear] LEVEL-GEOMETRY charge=1.0 durability="
+					           << io_weapon->durability;
 					ARX_DAMAGES_DurabilityCheck(io_weapon, 1.f);
 					io_source->isHit = true;
 					
@@ -873,6 +913,22 @@ void ARX_EQUIPMENT_Equip(Entity * target, Entity * toequip) {
 		return;
 	}
 	
+	/*
+	 * Taking it off the floor counts as taking it.
+	 *
+	 * Picking something up is announced from Inventory::insert - but equipping
+	 * straight from the ground never touches an inventory, so nothing was ever
+	 * said. The other machine went on believing the item was still lying there,
+	 * showed it, and let the other player take the same one: two copies of a
+	 * sword that only one of them found.
+	 *
+	 * Only when it comes from the world. Equipping something already in the
+	 * pack is nobody else's business.
+	 */
+	if(!locateInInventories(toequip)) {
+		coop::requestTake(*toequip);
+	}
+
 	toequip->setOwner(nullptr);
 	toequip->show = SHOW_FLAG_ON_PLAYER;
 	if(toequip == g_draggedEntity) {
