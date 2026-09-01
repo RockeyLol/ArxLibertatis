@@ -1,5 +1,6 @@
 /*
  * Copyright 2011-2022 Arx Libertatis Team (see the AUTHORS file)
+ * Copyright 2026 kingzmanh
  *
  * This file is part of Arx Libertatis.
  *
@@ -60,6 +61,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "core/Config.h"
 #include "core/Core.h"
+#include "platform/Time.h"
 #include "core/GameTime.h"
 #include "core/Version.h"
 
@@ -96,9 +98,13 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "math/Random.h"
 
+#include "net/CoopNet.h"
+#include "net/CoopPlayer.h"
+
 #include "physics/Physics.h"
 
 #include "platform/Platform.h"
+#include "platform/Process.h"
 
 #include "scene/GameSound.h"
 #include "scene/Interactive.h"
@@ -227,21 +233,37 @@ static s32 GetIOAnimIdx2(const Entity * io, const ANIM_HANDLE * anim) {
 }
 
 bool ARX_Changelevel_CurGame_Clear() {
-	
+
 	if(g_currentSavedGame) {
 		delete g_currentSavedGame, g_currentSavedGame = nullptr;
 	}
-	
+
 	if(CURRENT_GAME_FILE.empty()) {
+
 		CURRENT_GAME_FILE = fs::getUserDir() / "current.sav";
+
+		/*
+		 * Two players on one machine share a user directory, and this file is
+		 * the scratch copy of the world in progress - one per running game, not
+		 * one per installation. The first copy to start takes the plain name;
+		 * anyone joining from the same machine, who would otherwise fail here
+		 * and never reach the main menu, takes a name of their own.
+		 */
+		if(!fs::remove(CURRENT_GAME_FILE)) {
+			std::ostringstream oss;
+			oss << "current-" << platform::getProcessId() << ".sav";
+			CURRENT_GAME_FILE = fs::getUserDir() / oss.str();
+			LogInfo << "Another copy of the game is running; using " << CURRENT_GAME_FILE;
+		}
+
 	}
-	
+
 	// If there's a left over current game file, clear it
 	if(!fs::remove(CURRENT_GAME_FILE)) {
 		LogError << "Failed to remove current game file " << CURRENT_GAME_FILE;
 		return false;
 	}
-	
+
 	return true;
 }
 
@@ -321,7 +343,8 @@ void ARX_CHANGELEVEL_Change(AreaId area, std::string_view target, float angle) {
 	
 	arx_assume(area);
 	
-	LogDebug("ARX_CHANGELEVEL_Change " << area << " " << target << " " << angle);
+	LogWarning << "[coop-chain] level change: to area " << area << " target '" << target
+	           << "' from area " << (g_currentArea ? long(g_currentArea.handleData()) : -1);
 	
 	// not changing level, just teleported
 	if(area == g_currentArea) {
@@ -333,13 +356,20 @@ void ARX_CHANGELEVEL_Change(AreaId area, std::string_view target, float angle) {
 		return; // nothing more to do :)
 	}
 	
+	/*
+	 * The two players are free to be in different parts of the fortress. Tell
+	 * the other machine we are leaving before the world is torn down, so that
+	 * it stops expecting us here and drops the body it was drawing for us.
+	 */
+	coop::onAreaLeaving(g_currentArea, area, target);
+
 	progressBarSetTotal(238);
 	progressBarReset();
-	
+
 	LoadLevelScreen(area);
-	
+
 	ARX_PLAYER_Reset_Fall();
-	
+
 	progressBarAdvance();
 	LoadLevelScreen();
 	
@@ -350,12 +380,17 @@ void ARX_CHANGELEVEL_Change(AreaId area, std::string_view target, float angle) {
 	ARX_CHANGELEVEL_PushLevel(g_currentArea, area);
 	
 	ARX_CHANGELEVEL_PopLevel(area, true, target, angle);
-	
+
 	entities.player()->inzone = nullptr;
-	
+
 	ARX_PLAYER_RectifyPosition();
 	GMOD_RESET = true;
-	
+
+	// Now that the new area is up, announce where we are. If the other player
+	// is here too they become the authority (or we do), and either way they can
+	// start drawing us again.
+	coop::onAreaLoaded(area);
+
 }
 
 static bool ARX_CHANGELEVEL_PushLevel(AreaId oldArea, AreaId newArea) {
@@ -1423,12 +1458,39 @@ static bool ARX_CHANGELEVEL_Pop_Player(std::string_view target, float angle) {
 	const ARX_CHANGELEVEL_PLAYER * asp = reinterpret_cast<const ARX_CHANGELEVEL_PLAYER *>(dat + pos);
 	pos += sizeof(ARX_CHANGELEVEL_PLAYER);
 	
-	if(target.empty()) {
+	bool placedAtSpot = g_rememberedSpot.pending;
+
+	if(g_rememberedSpot.pending) {
+		// Coming back to a spot rather than to a doorway: the level has loaded,
+		// so put the player exactly where they were standing.
+		g_rememberedSpot.pending = false;
+		player.pos = g_rememberedSpot.pos;
+		player.desiredangle.setYaw(g_rememberedSpot.yaw);
+		player.angle.setYaw(g_rememberedSpot.yaw);
+		LogWarning << "[here] returned to " << player.pos.x << ',' << player.pos.y
+		           << ',' << player.pos.z;
+		/*
+		 * And hold that against the level's own placement, which has not run
+		 * yet: the entrance marker's script fires a moment from now on a first
+		 * visit and would put us at the door.
+		 */
+		g_deliberateArrival.spot = player.basePosition();
+		g_deliberateArrival.until = platform::getTime() + 10s;
+		g_deliberateArrival.armed = true;
+	} else if(target.empty()) {
 		player.angle = asp->angle;
 		player.pos = asp->pos.toVec3();
+		LogWarning << "[coop-chain] player placed from SAVE FILE at " << player.pos.x
+		           << ',' << player.pos.y << ',' << player.pos.z << " (no target marker)";
 	} else {
 		if(Entity * targetEntity = entities.getById(target)) {
 			player.pos = GetItemWorldPosition(targetEntity) + player.baseOffset();
+			LogWarning << "[coop-chain] player placed at marker '" << target << "' -> "
+			           << player.pos.x << ',' << player.pos.y << ',' << player.pos.z;
+		} else {
+			LogWarning << "[coop-chain] TARGET MARKER '" << target
+			           << "' NOT FOUND - player keeps stale position " << player.pos.x
+			           << ',' << player.pos.y << ',' << player.pos.z;
 		}
 		player.desiredangle.setYaw(angle);
 		player.angle.setYaw(angle);
@@ -1446,9 +1508,27 @@ static bool ARX_CHANGELEVEL_Pop_Player(std::string_view target, float angle) {
 	player.doingmagic = asp->doingmagic;
 	player.playerflags = PlayerFlags::load(asp->playerflags); // TODO save/load flags
 	
-	if(asp->TELEPORT_TO_LEVEL[0]) {
+	if(placedAtSpot) {
+		/*
+		 * We have just put this player somewhere on purpose - a summoning
+		 * spell's spot, or the console's "back". The save was written while a
+		 * travel was still in flight and carries it, so restoring it here
+		 * starts that journey again the moment this one ends: the player
+		 * appears where they were sent, then the second change lands them at
+		 * the doorway. That is the entrance nobody asked for.
+		 */
+		if(asp->TELEPORT_TO_LEVEL[0]) {
+			LogWarning << "[coop-chain] dropped the save's pending travel to area "
+			           << util::loadString(asp->TELEPORT_TO_LEVEL)
+			           << ": this arrival had a destination of its own";
+		}
+		g_teleportToArea = { };
+		TELEPORT_TO_POSITION.clear();
+	} else if(asp->TELEPORT_TO_LEVEL[0]) {
 		s32 teleportToArea = util::toInt(util::loadString(asp->TELEPORT_TO_LEVEL)).value_or(-1);
 		g_teleportToArea = teleportToArea >= 0 ? AreaId(teleportToArea) : AreaId();
+		LogWarning << "[coop-chain] SAVE SMUGGLED A PENDING TRAVEL: area "
+		           << util::loadString(asp->TELEPORT_TO_LEVEL);
 	} else {
 		g_teleportToArea = { };
 	}
@@ -2593,7 +2673,20 @@ void ARX_CHANGELEVEL_Load(const fs::path & savefile) {
 	
 	LogInfo << "Loading save " << savefile;
 	
+	/*
+	 * The teardown below frees every entity in list order, and the partner
+	 * body is created before the weapon that hangs off it - so the body died
+	 * first and the weapon's destructor then unlinked itself from freed
+	 * memory. Take the pair down here, in the safe order, before the sweep.
+	 */
+	coop::destroyAvatarEntity();
+	
 	LogDebug("begin ARX_CHANGELEVEL_Load " << savefile);
+
+	// Put co-op's own memory back to what it was when this save was written,
+	// before anything reads it. Hooked here rather than at the menu so every
+	// way of loading - including quickload - goes through it.
+	coop::loadSideState(savefile.parent());
 	
 	progressBarSetTotal(238);
 	progressBarReset();
@@ -2634,9 +2727,13 @@ void ARX_CHANGELEVEL_Load(const fs::path & savefile) {
 	BLOCK_PLAYER_CONTROLS = false;
 	player.Interface &= ~INTER_COMBATMODE;
 	ARX_EQUIPMENT_AttachPlayerWeaponToBack();
-	
+
 	entities.player()->animlayer[1].cur_anim = nullptr;
-	
+
+	// Loading a savegame lands us in whatever area that save was in, which is
+	// as much an area change as walking through a door.
+	coop::onAreaLoaded(AreaId(pld.level));
+
 }
 
 bool ARX_CHANGELEVEL_GetInfo(const fs::path & savefile, std::string & name, float & version,
