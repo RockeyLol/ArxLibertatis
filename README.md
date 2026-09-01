@@ -11,4 +11,6 @@ F8 open menu
 E use item
 G pick up item for use on npc or objects
 
+Add coop mod
+
 https://www.youtube.com/watch?v=e9M4oK3tb3Q
