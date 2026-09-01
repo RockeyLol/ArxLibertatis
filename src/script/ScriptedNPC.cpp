@@ -1,5 +1,6 @@
 /*
  * Copyright 2011-2022 Arx Libertatis Team (see the AUTHORS file)
+ * Copyright 2026 kingzmanh
  *
  * This file is part of Arx Libertatis.
  *
@@ -48,6 +49,9 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "game/Camera.h"
 #include "game/EntityManager.h"
 #include "game/NPC.h"
+#include "game/Player.h"
+#include "net/CoopNet.h"
+#include "net/CoopPlayer.h"
 #include "graphics/Math.h"
 #include "graphics/data/Mesh.h"
 #include "scene/Interactive.h"
@@ -487,7 +491,26 @@ public:
 		}
 		target = context.getStringVar(target);
 		Entity * t = entities.getById(target, io);
-		
+
+		/*
+		 * "settarget player" is how every creature in the game is pointed at
+		 * somebody - the goblin script alone says it ten times - and the word
+		 * player has exactly one meaning to the engine: the first one. That is
+		 * the whole reason enemies would chase player one across a level while
+		 * ignoring player two standing next to them, and it is not something
+		 * the individual scripts can be blamed for, since there was only ever
+		 * one player to name.
+		 *
+		 * So the word is resolved here to whichever player this creature should
+		 * actually be dealing with, which is the nearer of the two.
+		 */
+		if(t == entities.player()) {
+			// Sight first, then walking distance - not crow-flies distance,
+			// which would send a creature after a player one wall away instead
+			// of the one standing in front of it.
+			t = coop::chooseTargetPlayer(io);
+		}
+
 		DebugScript(' ' << options << ' ' << target);
 		
 		if(io->ioflags & IO_CAMERA) {
@@ -513,7 +536,14 @@ public:
 			}
 			ARX_NPC_LaunchPathfind(io, i);
 		}
-		
+
+		// A cutscene camera is told what to look at AFTER it is switched on, so
+		// the aim has to be sent again once it is known - otherwise the other
+		// player is looking through a camera pointed at nothing.
+		if(io == coop::partnerCameraEntity()) {
+			coop::reportCutsceneCamera(io);
+		}
+
 		return Success;
 	}
 	
