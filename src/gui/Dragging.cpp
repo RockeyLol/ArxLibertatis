@@ -1,5 +1,6 @@
 /*
  * Copyright 2013-2022 Arx Libertatis Team (see the AUTHORS file)
+ * Copyright 2026 kingzmanh
  *
  * This file is part of Arx Libertatis.
  *
@@ -37,6 +38,7 @@
 #include "math/GtxFunctions.h"
 #include "math/RandomVector.h"
 #include "math/Vector.h"
+#include "net/CoopNet.h"
 #include "physics/Collisions.h"
 #include "physics/Physics.h"
 #include "platform/Platform.h"
@@ -332,23 +334,44 @@ void updateDraggedEntity() {
 		
 	}
 	
+	// The impulse this release really used, so the other machine can reproduce
+	// it rather than guess. Zero means the object was set down, not thrown.
+	Vec3f launched = Vec3f(0.f);
+
 	if(g_dragStatus == EntityDragStatus_Throw) {
-		
+
 		Vec3f start = player.pos + Vec3f(0.f, 80.f, 0.f) - toXZ(result.offset);
 		Vec3f direction = glm::normalize(entity->pos - start);
 		entity->pos = start;
 		EERIE_PHYSICS_BOX_Launch(entity->obj, entity->pos, entity->angle, direction);
 		ARX_SOUND_PlaySFX(g_snd.WHOOSH, &entity->pos);
-		
+		launched = direction;
+
 	} else if(glm::abs(result.offsetY) > threshold) {
-		
+
 		EERIE_PHYSICS_BOX_Launch(entity->obj, entity->pos, entity->angle, Vec3f(0.f, 0.1f, 0.f));
 		ARX_SOUND_PlaySFX(g_snd.WHOOSH, &entity->pos);
-		
+		launched = Vec3f(0.f, 0.1f, 0.f);
+
 	} else {
-		
+
 		ARX_SOUND_PlayInterface(g_snd.INVSTD);
-		
+
 	}
-	
+
+	/*
+	 * Tell the other player where this ended up.
+	 *
+	 * Putting an item down in the world is a change to the world, and until now
+	 * it was the one such change nobody was told about. That did not show on
+	 * the host, who owns the area and is believed by definition, but a guest
+	 * would watch the item they had just placed jump back where it came from:
+	 * the host's next snapshot still described it lying at the old spot, and
+	 * the moment the drag ended there was nothing left to say otherwise.
+	 *
+	 * Sent after the physics launch so the position is the final one, throw
+	 * included, rather than where the cursor happened to let go.
+	 */
+	coop::reportItemDropped(*entity, entity->pos, launched);
+
 }

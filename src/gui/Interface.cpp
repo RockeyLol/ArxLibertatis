@@ -1,5 +1,6 @@
 /*
  * Copyright 2011-2022 Arx Libertatis Team (see the AUTHORS file)
+ * Copyright 2026 kingzmanh
  *
  * This file is part of Arx Libertatis.
  *
@@ -117,6 +118,8 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 #include "math/Rectangle.h"
 #include "math/Vector.h"
 
+#include "net/CoopNet.h"
+
 #include "physics/Collisions.h"
 #include "physics/Physics.h"
 
@@ -134,6 +137,7 @@ ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
 
 #include "window/RenderWindow.h"
 
+
 extern AnimationDuration PLAYER_ROTATION;
 extern float SLID_VALUE;
 
@@ -150,12 +154,9 @@ Vec2s MemoMouse;
 
 Entity * FlyingOverIO = nullptr;
 Entity * STARTED_ACTION_ON_IO = nullptr;
-// Глобальная переменная для "предлагаемого" предмета
-Entity * g_offeredItem = nullptr;
-// Глобальная переменная для предмета, выбранного для использования на цели
 Entity * g_itemToUse = nullptr;
-INTERFACE_TC g_bookResouces = INTERFACE_TC();
 
+INTERFACE_TC g_bookResouces = INTERFACE_TC();
 
 Note g_note;
 
@@ -166,12 +167,14 @@ bool TRUE_PLAYER_MOUSELOOK_ON = false;
 static bool MEMO_PLAYER_MOUSELOOK_ON = false;
 
 bool COMBINEGOLD = false;
+
 bool DRAGGING = false;
 bool MAGICMODE = false;
 
 static PlatformInstant COMBAT_MODE_ON_START_TIME = 0;
 static long SPECIAL_DRAW_WEAPON = 0;
 bool bGCroucheToggle = false;
+
 
 bool bInverseInventory = false;
 bool lOldTruePlayerMouseLook = TRUE_PLAYER_MOUSELOOK_ON;
@@ -643,7 +646,7 @@ extern PlatformInstant REQUEST_JUMP;
 void ArxGame::managePlayerControls() {
 	
 	ARX_PROFILE_FUNC();
-
+	
 	if(eeMouseDoubleClick1() && !(player.Interface & INTER_COMBATMODE) && !player.doingmagic
 	   && !g_secondaryInventoryHud.containsPos(DANAEMouse) && !g_playerInventoryHud.containsPos(DANAEMouse)
 	   && !g_cursorOverBook && eMouseState != MOUSE_IN_NOTE) {
@@ -654,7 +657,12 @@ void ArxGame::managePlayerControls() {
 			if(t->ioflags & IO_NPC) {
 				if(t->script.valid) {
 					if(t->_npcdata->lifePool.current > 0.f) {
-						SendIOScriptEvent(entities.player(), t, SM_CHAT);
+						// What it says depends on how far its script has got, which
+						// is knowledge the authority keeps. Asking our own copy gets
+						// the answers of someone who has never met us.
+						if(!coop::requestChat(*t)) {
+							SendIOScriptEvent(entities.player(), t, SM_CHAT);
+						}
 						DRAGGING = false;
 					} else {
 						if(t->inventory) {
@@ -704,7 +712,15 @@ void ArxGame::managePlayerControls() {
 					}
 					
 				} else if(t->script.valid) {
-					SendIOScriptEvent(entities.player(), t, SM_ACTION);
+					/*
+					 * Doors, levers and chests are world state. While the host
+					 * owns this area, running the script here as well would
+					 * open the door on our screen and leave it shut on theirs.
+					 * Ask them to run it and take the answer from the snapshot.
+					 */
+					if(!coop::requestAction(*t)) {
+						SendIOScriptEvent(entities.player(), t, SM_ACTION);
+					}
 				}
 				
 				DRAGGING = false;
@@ -1106,123 +1122,123 @@ void ArxGame::managePlayerControls() {
 		ARX_INTERFACE_setCombatMode(COMBAT_MODE_OFF);
 	}
 	
- // Checks INVENTORY Key Status (Игнорируем, если открыто меню магии)
-  // Checks INVENTORY Key Status.
- if(GInput->actionNowPressed(CONTROLS_CUST_INVENTORY)) {
-     // Если активно меню магии, полностью игнорируем нажатие, чтобы не было конфликта и зависания звука
-     if (!(player.Interface & INTER_INSTANT_MAGIC)) {
-         if(player.Interface & INTER_COMBATMODE) {
-             ARX_INTERFACE_setCombatMode(COMBAT_MODE_OFF);
-         }
-         bInverseInventory = !bInverseInventory;
-         lOldTruePlayerMouseLook = TRUE_PLAYER_MOUSELOOK_ON;
-         if(!config.input.mouseLookToggle) {
-             bForceEscapeFreeLook = true;
-         }
-     }
- }
- // Checks BOOK Key Status.
- if(GInput->actionNowPressed(CONTROLS_CUST_BOOK))
- 	g_playerBook.toggle();
+	// Checks INVENTORY Key Status.
+	if(GInput->actionNowPressed(CONTROLS_CUST_INVENTORY)) {
+		// Если активно меню магии, полностью игнорируем нажатие, чтобы не было конфликта и зависания звука
+		if (!(player.Interface & INTER_INSTANT_MAGIC)) {
+			if(player.Interface & INTER_COMBATMODE) {
+				ARX_INTERFACE_setCombatMode(COMBAT_MODE_OFF);
+			}
+			bInverseInventory = !bInverseInventory;
+			lOldTruePlayerMouseLook = TRUE_PLAYER_MOUSELOOK_ON;
+			if(!config.input.mouseLookToggle) {
+				bForceEscapeFreeLook = true;
+			}
+		}
+	}
+	
+	// Checks BOOK Key Status.
+	if(GInput->actionNowPressed(CONTROLS_CUST_BOOK))
+		g_playerBook.toggle();
 
-// --- НАЧАЛО: Логика мгновенной магии (с задержкой) ---
+	// --- НАЧАЛО: Логика мгновенной магии (с задержкой) ---
 
-// Статические переменные для отложенного каста
-static SpellType pendingInstantSpell = SPELL_NONE;
-static PlatformInstant instantCastStartTime = 0;
-static bool bIsCastingInCombat = false; // Флаг для каста в бою
+	// Статические переменные для отложенного каста
+	static SpellType pendingInstantSpell = SPELL_NONE;
+	static PlatformInstant instantCastStartTime = 0;
+	static bool bIsCastingInCombat = false; // Флаг для каста в бою
 
-// 1. Обработка нажатия кнопки каста
-if (player.m_selectedInstantSpell != SPELL_NONE && GInput->actionNowPressed(CONTROLS_CUST_SPELL_CAST)) {
-    Entity * io = entities.player();
-    
-    // Запоминаем заклинание для отложенного каста
-    pendingInstantSpell = player.m_selectedInstantSpell;
-    instantCastStartTime = g_platformTime.frameStart();
-    bIsCastingInCombat = (player.Interface & INTER_COMBATMODE) ? true : false;
-    
-    // Запускаем анимацию каста ТОЛЬКО если игрок НЕ в боевом режиме.
-    if (io && !(player.Interface & INTER_COMBATMODE)) {
-        if (io->anims[ANIM_CAST_CYCLE]) {
-            io->animlayer[1].cur_anim = io->anims[ANIM_CAST_CYCLE];
-            io->animlayer[1].ctime = AnimationDuration(0);
-        }
-    }
-    // В боевом режиме анимацию НЕ запускаем!
-    
-    // Закрываем меню магии после каста
-    if (player.Interface & INTER_INSTANT_MAGIC) {
-        player.Interface &= ~INTER_INSTANT_MAGIC;
-        TRUE_PLAYER_MOUSELOOK_ON = true;
-        MAGICMODE = false;
-    }
-}
+	// 1. Обработка нажатия кнопки каста
+	if (player.m_selectedInstantSpell != SPELL_NONE && GInput->actionNowPressed(CONTROLS_CUST_SPELL_CAST)) {
+		Entity * io = entities.player();
+		
+		// Запоминаем заклинание для отложенного каста
+		pendingInstantSpell = player.m_selectedInstantSpell;
+		instantCastStartTime = g_platformTime.frameStart();
+		bIsCastingInCombat = (player.Interface & INTER_COMBATMODE) ? true : false;
+		
+		// Запускаем анимацию каста ТОЛЬКО если игрок НЕ в боевом режиме.
+		if (io && !(player.Interface & INTER_COMBATMODE)) {
+			if (io->anims[ANIM_CAST_CYCLE]) {
+				io->animlayer[1].cur_anim = io->anims[ANIM_CAST_CYCLE];
+				io->animlayer[1].ctime = AnimationDuration(0);
+			}
+		}
+		// В боевом режиме анимацию НЕ запускаем!
+		
+		// Закрываем меню магии после каста
+		if (player.Interface & INTER_INSTANT_MAGIC) {
+			player.Interface &= ~INTER_INSTANT_MAGIC;
+			TRUE_PLAYER_MOUSELOOK_ON = true;
+			MAGICMODE = false;
+		}
+	}
 
-// 2. Обработка отложенного каста (выполняется каждый кадр)
-if (pendingInstantSpell != SPELL_NONE) {
-    PlatformDuration elapsed = g_platformTime.frameStart() - instantCastStartTime;
-    
-    // Ждем 250 миллисекунд
-    if (elapsed > 250ms) {
-        Entity * io = entities.player();
-        
-        // Применяем заклинание
-        if (io) {
-            ARX_SPELLS_Launch(pendingInstantSpell, *io, SpellcastFlags(), -1, nullptr, 0);
-            
-            // Сбрасываем анимацию ТОЛЬКО если НЕ в боевом режиме
-            // В боевом режиме анимацию оружия НЕ ТРОГАЕМ!
-            if (!(player.Interface & INTER_COMBATMODE)) {
-                io->animlayer[1].cur_anim = nullptr; 
-                io->animlayer[1].ctime = AnimationDuration(0);
-            }
-        }
-        
-        pendingInstantSpell = SPELL_NONE;
-        instantCastStartTime = 0;
-        bIsCastingInCombat = false;
-    }
-}
+	// 2. Обработка отложенного каста (выполняется каждый кадр)
+	if (pendingInstantSpell != SPELL_NONE) {
+		PlatformDuration elapsed = g_platformTime.frameStart() - instantCastStartTime;
+		
+		// Ждем 250 миллисекунд
+		if (elapsed > 250ms) {
+			Entity * io = entities.player();
+			
+			// Применяем заклинание
+			if (io) {
+				ARX_SPELLS_Launch(pendingInstantSpell, *io, SpellcastFlags(), -1, nullptr, 0);
+				
+				// Сбрасываем анимацию ТОЛЬКО если НЕ в боевом режиме
+				// В боевом режиме анимацию оружия НЕ ТРОГАЕМ!
+				if (!(player.Interface & INTER_COMBATMODE)) {
+					io->animlayer[1].cur_anim = nullptr; 
+					io->animlayer[1].ctime = AnimationDuration(0);
+				}
+			}
+			
+			pendingInstantSpell = SPELL_NONE;
+			instantCastStartTime = 0;
+			bIsCastingInCombat = false;
+		}
+	}
 
-// 3. Открытие/закрытие меню магии (ОРИГИНАЛ)
-if (GInput->actionNowPressed(CONTROLS_CUST_INSTANT_MAGIC)) {
-    // Если идет отложенный каст, отменяем его
-    if (pendingInstantSpell != SPELL_NONE) {
-        pendingInstantSpell = SPELL_NONE;
-        instantCastStartTime = 0;
-        bIsCastingInCombat = false;
-        Entity * io = entities.player();
-        if (io && !(player.Interface & INTER_COMBATMODE)) {
-            io->animlayer[1].cur_anim = nullptr;
-        }
-    }
+	// 3. Открытие/закрытие меню магии
+	if (GInput->actionNowPressed(CONTROLS_CUST_INSTANT_MAGIC)) {
+		// Если идет отложенный каст, отменяем его
+		if (pendingInstantSpell != SPELL_NONE) {
+			pendingInstantSpell = SPELL_NONE;
+			instantCastStartTime = 0;
+			bIsCastingInCombat = false;
+			Entity * io = entities.player();
+			if (io && !(player.Interface & INTER_COMBATMODE)) {
+				io->animlayer[1].cur_anim = nullptr;
+			}
+		}
 
-    player.Interface ^= INTER_INSTANT_MAGIC;
-    if (player.Interface & INTER_INSTANT_MAGIC) {
-        MAGICMODE = true;
-        bInverseInventory = false;
-        bForceEscapeFreeLook = false;
-    } else {
-        MAGICMODE = false;
-    }
-}
-// --- КОНЕЦ: Логика мгновенной магии ---
-// --- НАЧАЛО: Логика нового инвентаря ---
-if (GInput->actionNowPressed(CONTROLS_CUST_NEW_INVENTORY)) {
-    player.Interface ^= INTER_NEW_INVENTORY;
-    if (player.Interface & INTER_NEW_INVENTORY) {
-        MAGICMODE = true;
-        bInverseInventory = false;
-    } else {
-        MAGICMODE = false;
-    }
-}
-// --- КОНЕЦ: Логика нового инвентаря ---
+		player.Interface ^= INTER_INSTANT_MAGIC;
+		if (player.Interface & INTER_INSTANT_MAGIC) {
+			MAGICMODE = true;
+			bInverseInventory = false;
+			bForceEscapeFreeLook = false;
+		} else {
+			MAGICMODE = false;
+		}
+	}
+	// --- КОНЕЦ: Логика мгновенной магии ---
 
-    // Check For Combat Mode ON/OFF
-    if(   eeMousePressed1()
-       && !(player.Interface & INTER_COMBATMODE)
-       // ... и так далее ...
+	// --- НАЧАЛО: Логика нового инвентаря ---
+	if (GInput->actionNowPressed(CONTROLS_CUST_NEW_INVENTORY)) {
+		player.Interface ^= INTER_NEW_INVENTORY;
+		if (player.Interface & INTER_NEW_INVENTORY) {
+			MAGICMODE = true;
+			bInverseInventory = false;
+		} else {
+			MAGICMODE = false;
+		}
+	}
+	// --- КОНЕЦ: Логика нового инвентаря ---
+
+	// Check For Combat Mode ON/OFF
+	if(   eeMousePressed1()
+	   && !(player.Interface & INTER_COMBATMODE)
 	   && !g_cursorOverBook
 	   && !cursorIsSpecial()
 	   && PLAYER_MOUSELOOK_ON
@@ -1241,84 +1257,85 @@ if (GInput->actionNowPressed(CONTROLS_CUST_NEW_INVENTORY)) {
 	}
 	
 	// НЕ меняем режим мыши, если открыто меню
-if(ARXmenu.mode() == Mode_InGame) {
-    if(lOldTruePlayerMouseLook != TRUE_PLAYER_MOUSELOOK_ON) {
-        bInverseInventory = false;
-        if(TRUE_PLAYER_MOUSELOOK_ON) {
-            if(!CSEND) {
-                CSEND = 1;
-                SendIOScriptEvent(nullptr, entities.player(), SM_EXPLORATIONMODE);
-            }
-        }
-    } else {
-        if(CSEND) {
-            CSEND = 0;
-            SendIOScriptEvent(nullptr, entities.player(), SM_CURSORMODE);
-        }
-    }
-}
+	if(ARXmenu.mode() == Mode_InGame) {
+		if(lOldTruePlayerMouseLook != TRUE_PLAYER_MOUSELOOK_ON) {
+			bInverseInventory = false;
+			if(TRUE_PLAYER_MOUSELOOK_ON) {
+				if(!CSEND) {
+					CSEND = 1;
+					SendIOScriptEvent(nullptr, entities.player(), SM_EXPLORATIONMODE);
+				}
+			}
+		} else {
+			if(CSEND) {
+				CSEND = 0;
+				SendIOScriptEvent(nullptr, entities.player(), SM_CURSORMODE);
+			}
+		}
+	}
 	
 	static PlayerInterfaceFlags lOldInterfaceTemp = 0;
 	
-if(TRUE_PLAYER_MOUSELOOK_ON) {
-    if(bInverseInventory) {
-        bRenderInCursorMode = true;
-        if(!MAGICMODE && !(player.Interface & INTER_INSTANT_MAGIC)) {  // <-- ДОБАВЛЕНО: проверка магии
-            InventoryOpenClose(1);
-        }
-    } else {
-        if(!g_playerInventoryHud.isClosing()) {
-            g_hudRoot.mecanismIcon.reset();
-            if(player.Interface & INTER_INVENTORYALL) {
-                ARX_SOUND_PlayInterface(g_snd.BACKPACK, Random::getf(0.9f, 1.1f));
-                g_playerInventoryHud.close();
-                lOldInterfaceTemp = INTER_INVENTORYALL;
-            }
-            bRenderInCursorMode = false;
-            InventoryOpenClose(2);
-            if(player.Interface & INTER_INVENTORY) {
-                g_secondaryInventoryHud.close();
-            }
-            if(config.input.mouseLookToggle && !(player.Interface & INTER_INSTANT_MAGIC)) {  // <-- ДОБАВЛЕНО: проверка магии
-                TRUE_PLAYER_MOUSELOOK_ON = true;
-                SLID_START = g_platformTime.frameStart();
-            }
-        }
-    }
-} else {
-    if(bInverseInventory) {
-        if(!g_playerInventoryHud.isClosing()) {
-            bRenderInCursorMode = false;
-            InventoryOpenClose(2);
-            if(player.Interface & INTER_INVENTORY) {
-                g_secondaryInventoryHud.close();
-            }
-            if(config.input.mouseLookToggle && !(player.Interface & INTER_INSTANT_MAGIC)) {  // <-- ДОБАВЛЕНО: проверка магии
-                TRUE_PLAYER_MOUSELOOK_ON = true;
-                SLID_START = g_platformTime.frameStart();
-            }
-        }
-    } else {
-        bRenderInCursorMode = true;
-        if(!MAGICMODE && !(player.Interface & INTER_INSTANT_MAGIC)) {  // <-- ДОБАВЛЕНО: проверка магии
-            if(lOldInterfaceTemp) {
-                lOldInterface = lOldInterfaceTemp;
-                lOldInterfaceTemp = 0;
-                ARX_SOUND_PlayInterface(g_snd.BACKPACK, Random::getf(0.9f, 1.1f));
-            }
-            if(lOldInterface) {
-                player.Interface |= lOldInterface;
-                player.Interface &= ~INTER_INVENTORY;
-            } else {
-                InventoryOpenClose(1);
-            }
-        }
-    }
-    if(bRenderInCursorMode) {
-        spells.endByCaster(EntityHandle_Player, SPELL_FLYING_EYE);
-    }
+	if(TRUE_PLAYER_MOUSELOOK_ON) {
+		if(bInverseInventory) {
+			bRenderInCursorMode = true;
+			if(!MAGICMODE && !(player.Interface & INTER_INSTANT_MAGIC)) {
+				InventoryOpenClose(1);
+			}
+		} else {
+			if(!g_playerInventoryHud.isClosing()) {
+				g_hudRoot.mecanismIcon.reset();
+				if(player.Interface & INTER_INVENTORYALL) {
+					ARX_SOUND_PlayInterface(g_snd.BACKPACK, Random::getf(0.9f, 1.1f));
+					g_playerInventoryHud.close();
+					lOldInterfaceTemp = INTER_INVENTORYALL;
+				}
+				bRenderInCursorMode = false;
+				InventoryOpenClose(2);
+				if(player.Interface & INTER_INVENTORY) {
+					g_secondaryInventoryHud.close();
+				}
+				if(config.input.mouseLookToggle && !(player.Interface & INTER_INSTANT_MAGIC)) {
+					TRUE_PLAYER_MOUSELOOK_ON = true;
+					SLID_START = g_platformTime.frameStart();
+				}
+			}
+		}
+	} else {
+		if(bInverseInventory) {
+			if(!g_playerInventoryHud.isClosing()) {
+				bRenderInCursorMode = false;
+				InventoryOpenClose(2);
+				if(player.Interface & INTER_INVENTORY) {
+					g_secondaryInventoryHud.close();
+				}
+				if(config.input.mouseLookToggle && !(player.Interface & INTER_INSTANT_MAGIC)) {
+					TRUE_PLAYER_MOUSELOOK_ON = true;
+					SLID_START = g_platformTime.frameStart();
+				}
+			}
+		} else {
+			bRenderInCursorMode = true;
+			if(!MAGICMODE && !(player.Interface & INTER_INSTANT_MAGIC)) {
+				if(lOldInterfaceTemp) {
+					lOldInterface = lOldInterfaceTemp;
+					lOldInterfaceTemp = 0;
+					ARX_SOUND_PlayInterface(g_snd.BACKPACK, Random::getf(0.9f, 1.1f));
+				}
+				if(lOldInterface) {
+					player.Interface |= lOldInterface;
+					player.Interface &= ~INTER_INVENTORY;
+				} else {
+					InventoryOpenClose(1);
+				}
+			}
+		}
+		if(bRenderInCursorMode) {
+			spells.endByCaster(EntityHandle_Player, SPELL_FLYING_EYE);
+		}
+	}
 }
-}
+
 void ARX_INTERFACE_Reset()
 {
 	g_hudRoot.playerInterfaceFader.reset();
@@ -1436,40 +1453,47 @@ void ArxGame::manageKeyMouse() {
 		}
 		
 		if((eMouseState == MOUSE_IN_WORLD ||
-	    (eMouseState == MOUSE_IN_BOOK &&
-	     (!g_cursorOverBook || g_playerBook.currentPage() == BOOKMODE_MINIMAP))) &&
-	   !config.input.mouseLookToggle &&
-	   TRUE_PLAYER_MOUSELOOK_ON &&
-	   !(EERIEMouseButton & 2) &&
-	   !SPECIAL_DRAW_WEAPON &&
-	   !GInput->actionPressed(CONTROLS_CUST_FREELOOK)) {
-		TRUE_PLAYER_MOUSELOOK_ON = false;
-	}
+		    (eMouseState == MOUSE_IN_BOOK &&
+		     (!g_cursorOverBook || g_playerBook.currentPage() == BOOKMODE_MINIMAP))) &&
+		   !config.input.mouseLookToggle &&
+		   TRUE_PLAYER_MOUSELOOK_ON &&
+		   !(EERIEMouseButton & 2) &&
+		   !SPECIAL_DRAW_WEAPON &&
+		   !GInput->actionPressed(CONTROLS_CUST_FREELOOK)) {
+			TRUE_PLAYER_MOUSELOOK_ON = false;
+		}
 		
-	// Разрешаем вращение камерой всегда, когда это разрешено игрой (включая открытые меню)
-	PLAYER_MOUSELOOK_ON = TRUE_PLAYER_MOUSELOOK_ON;
+		PLAYER_MOUSELOOK_ON = TRUE_PLAYER_MOUSELOOK_ON;
 		
 		if(player.doingmagic == 2 && config.input.mouseLookToggle)
+			PLAYER_MOUSELOOK_ON = false;
+	}
+
+	if(ARXmenu.mode() != Mode_InGame) {
 		PLAYER_MOUSELOOK_ON = false;
-}
- // <-- ДОБАВЬТЕ ЭТУ СКОБКУ!
+	}
 	
 	// Checks For MouseGrabbing/Restoration after Grab
 	bool bRestoreCoordMouse = true;
 	
 	static bool LAST_PLAYER_MOUSELOOK_ON = false;
-	bool mouselook = PLAYER_MOUSELOOK_ON && !BLOCK_PLAYER_CONTROLS && !isInCinematic() && ARXmenu.mode() == Mode_InGame;
-if(mouselook && !LAST_PLAYER_MOUSELOOK_ON) {
-    MemoMouse = DANAEMouse;
-    GInput->setMouseMode(Mouse::Relative);
-} else if(!mouselook && LAST_PLAYER_MOUSELOOK_ON) {
-    GInput->setMouseMode(Mouse::Absolute);
-    DANAEMouse = MemoMouse;
-    if(mainApp->getWindow()->isFullScreen()) {
-        GInput->setMousePosAbs(DANAEMouse);
-    }
-    bRestoreCoordMouse = false;
-}
+	bool mouselook = PLAYER_MOUSELOOK_ON && !BLOCK_PLAYER_CONTROLS && !isInCinematic();
+	if(mouselook && !LAST_PLAYER_MOUSELOOK_ON) {
+		
+		MemoMouse = DANAEMouse;
+		GInput->setMouseMode(Mouse::Relative);
+		
+	} else if(!mouselook && LAST_PLAYER_MOUSELOOK_ON) {
+		
+		GInput->setMouseMode(Mouse::Absolute);
+		DANAEMouse = MemoMouse;
+		
+		if(mainApp->getWindow()->isFullScreen()) {
+			GInput->setMousePosAbs(DANAEMouse);
+		}
+		
+		bRestoreCoordMouse = false;
+	}
 	
 	LAST_PLAYER_MOUSELOOK_ON = mouselook;
 	PLAYER_ROTATION = 0;
@@ -1791,36 +1815,44 @@ void ArxGame::manageEditorControls() {
 	
 	g_secondaryInventoryHud.updateInputButtons();
 	
-	 // Single Click On Object
- if(   eeMouseUp1()
-    && FlyingOverIO
-    && !g_draggedEntity
- ) {
- 	SendIOScriptEvent(entities.player(), FlyingOverIO, SM_CLICKED);
- 	
- 	bool bOk = true;
- 	Entity * container = locateInInventories(FlyingOverIO).container;
- 	if(container && (container->ioflags & IO_SHOP)) {
- 		bOk = false;
- 	}
- 	
- 	if(   bOk
- 	   && (FlyingOverIO->ioflags & IO_ITEM)
- 	   && !(FlyingOverIO->ioflags & IO_MOVABLE)
- 	   && !g_playerInventoryHud.containsPos(DANAEMouse)
- 	   && !ARX_INTERFACE_MouseInBook()
- 	) {
- 		if(FlyingOverIO->ioflags & IO_GOLD) {
- 			ARX_SOUND_PlayInterface(g_snd.GOLD);
- 		}
- 		ARX_SOUND_PlayInterface(g_snd.INVSTD);
- 		while(FlyingOverIO && entities.player()->inventory->insert(FlyingOverIO)) {
- 			FlyingOverIO = InterClick(DANAEMouse);
- 			ARX_INVENTORY_IdentifyIO(FlyingOverIO);
- 		}
- 		FlyingOverIO = nullptr;
- 	}
- }
+	// Single Click On Object
+	if(   eeMouseUp1()
+	   && FlyingOverIO
+	   && !g_draggedEntity
+	) {
+		
+		SendIOScriptEvent(entities.player(), FlyingOverIO, SM_CLICKED);
+		
+		bool bOk = true;
+		Entity * container = locateInInventories(FlyingOverIO).container;
+		if(container && (container->ioflags & IO_SHOP)) {
+			// Cannot shift click items in shop inventories
+			bOk = false;
+		}
+		
+		if(   !(FlyingOverIO->ioflags & IO_MOVABLE)
+		   && (FlyingOverIO->ioflags & IO_ITEM)
+		   && bOk
+		   && GInput->actionPressed(CONTROLS_CUST_STEALTHMODE)
+		   && !g_playerInventoryHud.containsPos(DANAEMouse)
+		   && !ARX_INTERFACE_MouseInBook()
+		) {
+			
+			if(FlyingOverIO->ioflags & IO_GOLD) {
+				ARX_SOUND_PlayInterface(g_snd.GOLD);
+			}
+			
+			ARX_SOUND_PlayInterface(g_snd.INVSTD);
+			
+			while(FlyingOverIO && entities.player()->inventory->insert(FlyingOverIO)) {
+				FlyingOverIO = InterClick(DANAEMouse);
+				ARX_INVENTORY_IdentifyIO(FlyingOverIO);
+			}
+			// If there is no space, leave the item where it is
+			
+			FlyingOverIO = nullptr;
+		}
+	}
 	
 	if(!(player.Interface & INTER_COMBATMODE)) {
 		
@@ -1839,9 +1871,26 @@ void ArxGame::manageEditorControls() {
 			
 			if(io) {
 				if(COMBINEGOLD) {
-					SendIOScriptEvent(nullptr, io, SM_COMBINE, "gold_coin");
+					/*
+					 * Same rule as the item hand-over below: the quest lives
+					 * on the world's machine, so the payment must run there.
+					 * Run here by a guest it pays a replica - the dragon takes
+					 * the toll on one screen and knows nothing on the other.
+					 */
+					if(!coop::requestCombineGold(*io)) {
+						SendIOScriptEvent(nullptr, io, SM_COMBINE, "gold_coin");
+					}
 				} else if(io != COMBINE) {
-					combineEntities(COMBINE, io);
+					/*
+					 * Handing something over is how this game's quests move,
+					 * and the quest belongs to the world - which is the host's.
+					 * Run here by a guest, the goblin takes the form on one
+					 * screen and refuses it on the other. So it is asked for,
+					 * and the answer decides whether the item leaves the pack.
+					 */
+					if(!coop::requestCombine(*COMBINE, *io)) {
+						combineEntities(COMBINE, io);
+					}
 				}
 			} else if(COMBINE) { // GLights
 				float fMaxdist = player.m_telekinesis ? 850 : 300;
@@ -1907,8 +1956,8 @@ void ArxGame::manageEditorControls() {
 		if(eeMouseDoubleClick1() && !COMBINE && FlyingOverIO && (FlyingOverIO->ioflags & IO_ITEM)) {
 			
 			bool accept_combine = true;
-			Entity * cont = locateInInventories(FlyingOverIO).container;
-			if(cont && (cont->ioflags & IO_SHOP)) {
+			Entity * container = locateInInventories(FlyingOverIO).container;
+			if(container && (container->ioflags & IO_SHOP)) {
 				// Cannot combine items in shop inventories
 				accept_combine = false;
 			}
@@ -2025,186 +2074,167 @@ TextureStage::FilterMode getInterfaceTextureFilter() {
 	}
 	arx_unreachable();
 }
+
 //-----------------------------------------------------------------------------
 // Мгновенная магия - ОДНА ИКОНКА ВНИЗУ ЭКРАНА
 //-----------------------------------------------------------------------------
 void ARX_INTERFACE_RenderInstantMagic() {
-    if (!(player.Interface & INTER_INSTANT_MAGIC)) {
-        return;
-    }
+	if (!(player.Interface & INTER_INSTANT_MAGIC)) {
+		return;
+	}
 
-    // Собираем список известных заклинаний
-    std::vector<SpellType> knownSpells;
-    for (int i = 0; i < SPELL_TYPES_COUNT; i++) {
-        if (!spellicons[i].bSecret && player.hasAllRunes(spellicons[i].symbols)) {
-            knownSpells.push_back(static_cast<SpellType>(i));
-        }
-    }
-    if (knownSpells.empty()) {
-        return;
-    }
+	// Собираем список известных заклинаний
+	std::vector<SpellType> knownSpells;
+	for (int i = 0; i < SPELL_TYPES_COUNT; i++) {
+		if (!spellicons[i].bSecret && player.hasAllRunes(spellicons[i].symbols)) {
+			knownSpells.push_back(static_cast<SpellType>(i));
+		}
+	}
+	if (knownSpells.empty()) {
+		return;
+	}
 
-    // Статический индекс выбранного заклинания
-    static int selectedIndex = 0;
-    if (selectedIndex >= (int)knownSpells.size()) selectedIndex = 0;
+	// Статический индекс выбранного заклинания
+	static int selectedIndex = 0;
+	if (selectedIndex >= (int)knownSpells.size()) selectedIndex = 0;
 
-    // Прокрутка настраиваемыми кнопками (назначаются в настройках игры)
-if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_PREV)) {
-    selectedIndex--;
-    if (selectedIndex < 0) selectedIndex = (int)knownSpells.size() - 1;
+	// Прокрутка настраиваемыми кнопками (назначаются в настройках игры)
+	if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_PREV)) {
+		selectedIndex--;
+		if (selectedIndex < 0) selectedIndex = (int)knownSpells.size() - 1;
+	}
+	if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_NEXT)) {
+		selectedIndex++;
+		if (selectedIndex >= (int)knownSpells.size()) selectedIndex = 0;
+	}
+
+	// Запоминаем выбранное заклинание
+	player.m_selectedInstantSpell = knownSpells[selectedIndex];
+
+	// Параметры отрисовки
+	float iconSize = 48.f * g_sizeRatio.x;
+	float startX = (g_size.width() - iconSize) / 2.f;
+	float startY = g_size.height() - iconSize - 60.f * g_sizeRatio.y;
+
+	// Золотая рамка
+	static TextureContainer * bgTexture = nullptr;
+	if (!bgTexture) {
+		bgTexture = TextureContainer::LoadUI("graph/interface/book/spellbook");
+	}
+	if (bgTexture) {
+		Rectf frameRect(startX - 5.f, startY - 5.f, startX + iconSize + 5.f, startY + iconSize + 5.f);
+		EERIEDrawBitmap(frameRect, 0.00005f, bgTexture, Color(255, 215, 0, 200));
+	}
+
+	// Иконка заклинания
+	SpellType currentSpell = knownSpells[selectedIndex];
+	if (spellicons[currentSpell].tc) {
+		Rectf iconRect(startX, startY, startX + iconSize, startY + iconSize);
+		EERIEDrawBitmap(iconRect, 0.0001f, spellicons[currentSpell].tc, Color::white);
+	}
 }
-if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_NEXT)) {
-    selectedIndex++;
-    if (selectedIndex >= (int)knownSpells.size()) selectedIndex = 0;
-}
 
-    // Запоминаем выбранное заклинание
-    player.m_selectedInstantSpell = knownSpells[selectedIndex];
-
-    // Параметры отрисовки
-    float iconSize = 48.f * g_sizeRatio.x;
-    float startX = (g_size.width() - iconSize) / 2.f;
-    float startY = g_size.height() - iconSize - 60.f * g_sizeRatio.y;
-
-    // Золотая рамка
-    static TextureContainer * bgTexture = nullptr;
-    if (!bgTexture) {
-        bgTexture = TextureContainer::LoadUI("graph/interface/book/spellbook");
-    }
-    if (bgTexture) {
-        Rectf frameRect(startX - 5.f, startY - 5.f, startX + iconSize + 5.f, startY + iconSize + 5.f);
-        EERIEDrawBitmap(frameRect, 0.00005f, bgTexture, Color(255, 215, 0, 200));
-    }
-
-    // Иконка заклинания
-    SpellType currentSpell = knownSpells[selectedIndex];
-    if (spellicons[currentSpell].tc) {
-        Rectf iconRect(startX, startY, startX + iconSize, startY + iconSize);
-        EERIEDrawBitmap(iconRect, 0.0001f, spellicons[currentSpell].tc, Color::white);
-    }
-}
 //-----------------------------------------------------------------------------
 // Новый инвентарь - горизонтальное меню внизу экрана
 //-----------------------------------------------------------------------------
 void ARX_INTERFACE_RenderNewInventory() {
-    if (!(player.Interface & INTER_NEW_INVENTORY)) {
-        // Сброс выбранного предмета при закрытии меню
-        g_offeredItem = nullptr;
-        return;
-    }
+	if (!(player.Interface & INTER_NEW_INVENTORY)) {
+		return;
+	}
 
-    // Валидация: если предмет был уничтожен или выброшен
-    if (g_offeredItem) {
-        InventoryPos checkPos = locateInInventories(g_offeredItem);
-        if (!checkPos.container || checkPos.container != entities.player()) {
-            g_offeredItem = nullptr;
-        }
-    }
+	// Собираем список предметов в инвентаре
+	std::vector<Entity *> items;
+	for (Entity & entity : entities(IO_ITEM)) {
+		InventoryPos pos = locateInInventories(&entity);
+		if (pos.container && pos.container == entities.player()) {
+			items.push_back(&entity);
+		}
+	}
 
-    // Собираем список предметов в инвентаре
-    std::vector<Entity *> items;
-    for (Entity & entity : entities(IO_ITEM)) {
-        InventoryPos pos = locateInInventories(&entity);
-        if (pos.container && pos.container == entities.player()) {
-            items.push_back(&entity);
-        }
-    }
+	if (items.empty()) {
+		return;
+	}
 
-    if (items.empty()) {
-        return;
-    }
+	static int selectedIndex = 0;
+	if (selectedIndex >= (int)items.size()) selectedIndex = 0;
 
-    static int selectedIndex = 0;
-    if (selectedIndex >= (int)items.size()) selectedIndex = 0;
+	if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_PREV)) {
+		selectedIndex--;
+		if (selectedIndex < 0) selectedIndex = (int)items.size() - 1;
+	}
+	if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_NEXT)) {
+		selectedIndex++;
+		if (selectedIndex >= (int)items.size()) selectedIndex = 0;
+	}
 
-    if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_PREV)) {
-        selectedIndex--;
-        if (selectedIndex < 0) selectedIndex = (int)items.size() - 1;
-    }
-    if (GInput->actionNowPressed(CONTROLS_CUST_SPELL_NEXT)) {
-        selectedIndex++;
-        if (selectedIndex >= (int)items.size()) selectedIndex = 0;
-    }
+	// Параметры отрисовки - горизонтальное меню чуть ниже прицела
+	float iconSize = 24.f * g_sizeRatio.x;
+	float spacing = 8.f * g_sizeRatio.x;
+	float menuHeight = iconSize + 20.f * g_sizeRatio.y;
+	float totalWidth = std::min((float)items.size() * (iconSize + spacing) - spacing, g_size.width() * 0.8f);
+	float startX = (g_size.width() - totalWidth) / 2.f;
+	float startY = (g_size.height() / 2.f) + 120.f * g_sizeRatio.y;
 
-    // Параметры отрисовки - горизонтальное меню чуть ниже прицела
-    float iconSize = 24.f * g_sizeRatio.x;
-    float spacing = 8.f * g_sizeRatio.x;
-    float menuHeight = iconSize + 20.f * g_sizeRatio.y;
-    float totalWidth = std::min((float)items.size() * (iconSize + spacing) - spacing, g_size.width() * 0.8f);
-    float startX = (g_size.width() - totalWidth) / 2.f;
-    float startY = (g_size.height() / 2.f) + 120.f * g_sizeRatio.y;
+	// Полупрозрачный фон
+	static TextureContainer * bgTexture = nullptr;
+	if (!bgTexture) {
+		bgTexture = TextureContainer::LoadUI("graph/interface/book/spellbook");
+	}
+	if (bgTexture) {
+		Rectf bgRect(startX - 10.f, startY - 10.f, startX + totalWidth + 10.f, startY + menuHeight + 10.f);
+		EERIEDrawBitmap(bgRect, 0.0001f, bgTexture, Color(0, 0, 0, 150));
+	}
 
-    // Полупрозрачный фон
-    static TextureContainer * bgTexture = nullptr;
-    if (!bgTexture) {
-        bgTexture = TextureContainer::LoadUI("graph/interface/book/spellbook");
-    }
-    if (bgTexture) {
-        Rectf bgRect(startX - 10.f, startY - 10.f, startX + totalWidth + 10.f, startY + menuHeight + 10.f);
-        EERIEDrawBitmap(bgRect, 0.0001f, bgTexture, Color(0, 0, 0, 150));
-    }
+	// Рисуем иконки предметов горизонтально
+	int visibleItems = std::min((int)items.size(), (int)(totalWidth / (iconSize + spacing)));
+	int startItem = std::max(0, selectedIndex - visibleItems / 2);
 
-    // Рисуем иконки предметов горизонтально
-    int visibleItems = std::min((int)items.size(), (int)(totalWidth / (iconSize + spacing)));
-    int startItem = std::max(0, selectedIndex - visibleItems / 2);
+	for (int i = 0; i < visibleItems && (startItem + i) < (int)items.size(); i++) {
+		int itemIndex = startItem + i;
+		Entity * item = items[itemIndex];
+		float x = startX + i * (iconSize + spacing);
+		float y = startY + 10.f * g_sizeRatio.y;
 
-    for (int i = 0; i < visibleItems && (startItem + i) < (int)items.size(); i++) {
-        int itemIndex = startItem + i;
-        Entity * item = items[itemIndex];
-        float x = startX + i * (iconSize + spacing);
-        float y = startY + 10.f * g_sizeRatio.y;
+		bool isSelected = (itemIndex == selectedIndex);
 
-        bool isSelected = (itemIndex == selectedIndex);
+		// Подсветка выбранного предмета
+		if (isSelected && bgTexture) {
+			Rectf highlightRect(x - 3.f, y - 3.f, x + iconSize + 3.f, y + iconSize + 3.f);
+			EERIEDrawBitmap(highlightRect, 0.00005f, bgTexture, Color(255, 215, 0, 150));
+		}
 
-        // Подсветка выбранного предмета
-        if (isSelected && bgTexture) {
-            Rectf highlightRect(x - 3.f, y - 3.f, x + iconSize + 3.f, y + iconSize + 3.f);
-            EERIEDrawBitmap(highlightRect, 0.00005f, bgTexture, Color(255, 215, 0, 150));
-        }
+		// Иконка предмета
+		if (item->m_icon) {
+			Rectf iconRect(x, y, x + iconSize, y + iconSize);
+			EERIEDrawBitmap(iconRect, 0.0001f, item->m_icon, Color::white);
+		}
+	}
 
-        // Иконка предмета
-        if (item->m_icon) {
-            Rectf iconRect(x, y, x + iconSize, y + iconSize);
-            // Если предмет выбран для использования, рисуем его с зелёной подсветкой
-            Color iconColor = Color::white;
-            if (g_offeredItem && item == g_offeredItem) {
-                // Проверяем, что предмет все еще в инвентаре
-                InventoryPos pos = locateInInventories(g_offeredItem);
-                if (pos.container == entities.player()) {
-                    iconColor = Color(100, 255, 100, 255);
-                } else {
-                    g_offeredItem = nullptr;
-                }
-            }
-            EERIEDrawBitmap(iconRect, 0.0001f, item->m_icon, iconColor);
-        }
-    }
+	// Обработка кнопки "Использовать" (сразу использовать предмет)
+	if (GInput->actionNowPressed(CONTROLS_CUST_USE_ITEM)) {
+		if (selectedIndex < (int)items.size()) {
+			Entity * selectedItem = items[selectedIndex];
+			if (selectedItem) {
+				SendIOScriptEvent(entities.player(), selectedItem, SM_INVENTORYUSE);
+				ARX_SOUND_PlayInterface(g_snd.INVSTD);
+			}
+		}
+	}
 
-    // Обработка кнопки "Использовать" (сразу использовать предмет)
-if (GInput->actionNowPressed(CONTROLS_CUST_USE_ITEM)) {
-    if (selectedIndex < (int)items.size()) {
-        Entity * selectedItem = items[selectedIndex];
-        if (selectedItem) {
-            SendIOScriptEvent(entities.player(), selectedItem, SM_INVENTORYUSE);
-            ARX_SOUND_PlayInterface(g_snd.INVSTD);
-        }
-    }
-}
-
-// Обработка выбора предмета для использования на цели (кнопка G) - используем COMBINE
-if (GInput->actionNowPressed(CONTROLS_CUST_OFFER_ITEM)) {
-    if (selectedIndex < (int)items.size()) {
-        Entity * selectedItem = items[selectedIndex];
-        if (selectedItem) {
-            // Используем старую систему COMBINE вместо g_offeredItem
-            if (COMBINE == selectedItem) {
-                COMBINE = nullptr;
-            } else {
-                COMBINE = selectedItem;
-                updateCombineFlags(COMBINE);
-            }
-            ARX_SOUND_PlayInterface(g_snd.INVSTD);
-        }
-    }
-}
+	// Обработка выбора предмета для использования на цели (кнопка G) - используем COMBINE
+	if (GInput->actionNowPressed(CONTROLS_CUST_OFFER_ITEM)) {
+		if (selectedIndex < (int)items.size()) {
+			Entity * selectedItem = items[selectedIndex];
+			if (selectedItem) {
+				// Используем старую систему COMBINE
+				if (COMBINE == selectedItem) {
+					COMBINE = nullptr;
+				} else {
+					COMBINE = selectedItem;
+					updateCombineFlags(COMBINE);
+				}
+				ARX_SOUND_PlayInterface(g_snd.INVSTD);
+			}
+		}
+	}
 }
