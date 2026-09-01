@@ -1,5 +1,6 @@
 /*
  * Copyright 2011-2022 Arx Libertatis Team (see the AUTHORS file)
+ * Copyright 2026 kingzmanh
  *
  * This file is part of Arx Libertatis.
  *
@@ -79,13 +80,15 @@ enum ControlAction {
 	CONTROLS_CUST_TOGGLE_FULLSCREEN,
 	CONTROLS_CUST_CONSOLE,
 	CONTROLS_CUST_DEBUG,
-	CONTROLS_CUST_INSTANT_MAGIC,
-	CONTROLS_CUST_SPELL_PREV,
-	CONTROLS_CUST_SPELL_NEXT,
-	CONTROLS_CUST_SPELL_CAST,
-	CONTROLS_CUST_USE_ITEM,
-	CONTROLS_CUST_NEW_INVENTORY,
-	CONTROLS_CUST_OFFER_ITEM,
+	CONTROLS_CUST_INSTANT_MAGIC,      // From kingzmanh fork
+	CONTROLS_CUST_SPELL_PREV,         // From kingzmanh fork
+	CONTROLS_CUST_SPELL_NEXT,         // From kingzmanh fork
+	CONTROLS_CUST_SPELL_CAST,         // From kingzmanh fork
+	CONTROLS_CUST_USE_ITEM,           // From kingzmanh fork
+	CONTROLS_CUST_NEW_INVENTORY,      // From kingzmanh fork
+	CONTROLS_CUST_OFFER_ITEM,         // From kingzmanh fork
+	//! Hold to speak to the other player. Added last so no existing binding moves.
+	CONTROLS_CUST_COOP_TALK,          // From coop fork
 	NUM_ACTION_KEY
 };
 
@@ -104,6 +107,21 @@ enum QuickLevelTransition {
 	NoQuickLevelTransition = 0,
 	JumpToChangeLevel = 1,
 	ChangeLevelImmediately = 2,
+};
+
+/*!
+ * Who watches a story moment when two people share one world.
+ *
+ * Only meaningful while both players are in the same area: apart, each machine
+ * runs its own half of the world and plays its own scenes, which is already
+ * exactly right. Together, only the host simulates, so a scene set off by
+ * either of them fires there and somebody has to decide whose screen it is.
+ */
+enum CutsceneAudience {
+	CutscenesForTrigger = 0, //!< whoever walked into it, and only them
+	CutscenesForBoth = 1,
+	CutscenesForHost = 2,
+	CutscenesForGuest = 3,
 };
 
 enum AutoReadyWeapon {
@@ -247,7 +265,9 @@ public:
 		std::string debug; //!< Logger debug levels.
 		
 		std::string realtimeOverride;
-		
+
+		CutsceneAudience cutscenes; // From coop fork
+
 	} misc;
 	
 	bool setActionKey(ControlAction actionId, size_t index, InputKeyId key);

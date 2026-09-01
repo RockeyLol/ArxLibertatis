@@ -1,5 +1,6 @@
 /*
  * Copyright 2011-2022 Arx Libertatis Team (see the AUTHORS file)
+ * Copyright 2026 kingzmanh
  *
  * This file is part of Arx Libertatis.
  *
@@ -92,6 +93,8 @@ constexpr const int
 	bufferSize = 0,
 	quickLevelTransition = JumpToChangeLevel;
 
+const CutsceneAudience cutscenes = CutscenesForTrigger;
+
 constexpr const bool
 	fullscreen = true,
 	viewBobbing = true,
@@ -179,13 +182,15 @@ constexpr const ActionKey actions[NUM_ACTION_KEY] = {
 	ActionKey((Keyboard::Key_LeftAlt << 16) | Keyboard::Key_Enter, (Keyboard::Key_RightAlt << 16) | Keyboard::Key_Enter), // TOGGLE_FULLSCREEN
 	ActionKey(Keyboard::Key_Grave), // CONSOLE
 	ActionKey(Keyboard::Key_ScrollLock, Keyboard::Key_Backslash), // DEBUG
-    ActionKey(Keyboard::Key_F7), // <-- INSTANT_MAGIC
-	ActionKey(Keyboard::Key_LeftBracket),  // SPELL_PREV (клавиша [)
-    ActionKey(Keyboard::Key_RightBracket), // SPELL_NEXT (клавиша ])
+	ActionKey(Keyboard::Key_F7), // INSTANT_MAGIC
+	ActionKey(Keyboard::Key_LeftBracket), // SPELL_PREV (клавиша [)
+	ActionKey(Keyboard::Key_RightBracket), // SPELL_NEXT (клавиша ])
 	ActionKey(Keyboard::Key_V), // SPELL_CAST (каст заклинания)
-	ActionKey(Keyboard::Key_E),            // USE_ITEM (клавиша E)
+	ActionKey(Keyboard::Key_E), // USE_ITEM (клавиша E)
 	ActionKey(Keyboard::Key_F8), // NEW_INVENTORY
-    ActionKey(Keyboard::Key_G),	// OFFER_ITEM (клавиша G)
+	ActionKey(Keyboard::Key_G), // OFFER_ITEM (клавиша G)
+	ActionKey(Keyboard::Key_V), // COOP_TALK - V was unbound, and is where most
+	                            // players already expect push to talk to be
 };
 
 } // namespace Default
@@ -329,11 +334,12 @@ constexpr const std::string_view actions[NUM_ACTION_KEY] = {
 	"debug",
 	"instant_magic",
 	"spell_prev ",
-    "spell_next ",
+	"spell_next ",
 	"spell_cast ",
 	"use_item ",
 	"new_inventory ",
 	"offer_item ",
+	"coop_talk",
 };
 
 // Misc options
@@ -342,7 +348,8 @@ constexpr const std::string_view
 	migration = "migration",
 	quicksaveSlots = "quicksave_slots",
 	debugLevels = "debug",
-	realtimeOverride = "realtime_override";
+	realtimeOverride = "realtime_override",
+	cutscenes = "cutscenes";
 
 } // namespace Key
 
@@ -567,6 +574,7 @@ bool Config::save() {
 	writer.writeKey(Key::quicksaveSlots, misc.quicksaveSlots);
 	writer.writeKey(Key::debugLevels, misc.debug);
 	writer.writeKey(Key::realtimeOverride, misc.realtimeOverride);
+	writer.writeKey(Key::cutscenes, misc.cutscenes);
 	
 	return writer.flush();
 }
@@ -702,6 +710,7 @@ bool Config::init(const fs::path & file) {
 	misc.quicksaveSlots = std::max(reader.getKey(Section::Misc, Key::quicksaveSlots, Default::quicksaveSlots), 1);
 	misc.debug = reader.getKey(Section::Misc, Key::debugLevels, Default::debugLevels);
 	misc.realtimeOverride = reader.getKey(Section::Misc, Key::realtimeOverride, Default::realtimeOverride);
+	misc.cutscenes = CutsceneAudience(reader.getKey(Section::Misc, Key::cutscenes, Default::cutscenes));
 	
 	return loaded;
 }
